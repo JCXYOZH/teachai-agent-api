@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成。
 
 ## 技术栈
 
@@ -61,12 +61,25 @@ Copy-Item .env.example .env
 | GET/PATCH/DELETE | `/api/v1/assets/{id}` | 素材详情、编辑与软删除 |
 | GET | `/api/v1/assets/{id}/download` | 鉴权下载原文件 |
 | GET | `/api/v1/search` | 课程与素材中文检索 |
+| GET | `/api/v1/providers` | Provider 列表与当前用户配置状态 |
+| GET | `/api/v1/providers/{id}` | 单个 Provider 详情 |
+| PUT/DELETE | `/api/v1/providers/{id}/config` | 保存或删除 Provider 配置 |
+| POST | `/api/v1/providers/{id}/test` | 真实生成请求测试，支持临时覆盖值 |
+| GET/PUT | `/api/v1/courses/{id}/outline` | 读取或手动保存课程大纲 |
+| POST | `/api/v1/courses/{id}/outline/generate` | 基于课程素材生成版本化大纲 |
 
 错误统一返回：
 
 ```json
 {"error": {"code": "ERROR_CODE", "message": "Human readable message", "details": null}}
 ```
+
+## Provider 与大纲
+
+- Provider 配置、API Key 加密、URL 防护和连接测试规则见 `docs/providers.md`。
+- 大纲版本、素材截断、JSON 宽容解析与重试策略见 `docs/outlines.md`。
+- 连接测试会真实请求 `/chat/completions` 或 Anthropic `/messages`；`/models` 仅用于补充模型列表。
+- Qwen 优先读取 `QWEN_API_KEY`，为空时回退到 `DASHSCOPE_API_KEY`。可用 `scripts/check_qwen.py` 验证 `qwen3.8-omni-flash`。
 
 ## 认证设计
 
@@ -106,6 +119,5 @@ docker compose up -d
 
 ## 后续阶段
 
-1. Provider 抽象、模型配置与课程大纲生成。
-2. 场景 DSL、生成 Worker、事件流与课堂渲染。
-3. TTS、图片生成、导出与生产部署。
+1. 场景 DSL、生成 Worker、事件流与课堂渲染。
+2. TTS、图片生成、导出与生产部署。

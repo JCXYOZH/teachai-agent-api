@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     llama_api_key: str = ""
     llama_model: str = "Qwen3.6-35B-A3B"
 
+    provider_key_encryption_secret: Optional[str] = None
+    provider_test_timeout_seconds: float = 20.0
+    outline_material_char_limit: int = 16_000
+    outline_generation_timeout_seconds: float = 600.0
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    deepseek_api_key: str = ""
+    qwen_api_key: str = ""
+    dashscope_api_key: str = ""
+    glm_api_key: str = ""
+    kimi_api_key: str = ""
+
     @model_validator(mode="after")
     def validate_security_config(self) -> "Settings":
         if self.app_env == "production" and self.jwt_secret == DEFAULT_JWT_SECRET:
@@ -70,6 +82,22 @@ class Settings(BaseSettings):
             )
         if self.asset_parse_timeout_seconds < 1 or self.asset_parse_timeout_seconds > 600:
             raise ValueError("ASSET_PARSE_TIMEOUT_SECONDS must be between 1 and 600")
+        if self.provider_test_timeout_seconds < 1 or self.provider_test_timeout_seconds > 120:
+            raise ValueError("PROVIDER_TEST_TIMEOUT_SECONDS must be between 1 and 120")
+        if (
+            self.outline_material_char_limit < 1000
+            or self.outline_material_char_limit > 200_000
+        ):
+            raise ValueError(
+                "OUTLINE_MATERIAL_CHAR_LIMIT must be between 1000 and 200000"
+            )
+        if (
+            self.outline_generation_timeout_seconds < 60
+            or self.outline_generation_timeout_seconds > 1800
+        ):
+            raise ValueError(
+                "OUTLINE_GENERATION_TIMEOUT_SECONDS must be between 60 and 1800"
+            )
         return self
 
     @property

@@ -43,8 +43,8 @@ async def clean_database(migrate_database) -> None:
     async with engine.begin() as connection:
         await connection.execute(
             text(
-                'TRUNCATE TABLE asset_extractions, assets, courses, folders, '
-                'auth_sessions, users RESTART IDENTITY CASCADE'
+                'TRUNCATE TABLE course_outlines, asset_extractions, assets, courses, folders, '
+                'provider_configs, auth_sessions, users RESTART IDENTITY CASCADE'
             )
         )
     yield
