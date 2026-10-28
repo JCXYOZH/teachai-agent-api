@@ -1,0 +1,33 @@
+[project]
+name = "teachai-agent-api"
+version = "0.1.0"
+description = "TeachAIAgent backend API"
+requires-python = ">=3.8,<3.9"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:passlib.*:DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+known-third-party = ["alembic"]
+
+[tool.mypy]
+python_version = "3.8"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
