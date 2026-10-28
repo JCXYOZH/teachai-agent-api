@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from dataclasses import dataclass
 from typing import Any, List, Optional
 from uuid import UUID
 
@@ -14,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
-from app.models.asset import Asset, AssetExtraction
 from app.models.course import Course
 from app.models.outline import CourseOutline
 from app.models.user import User
@@ -24,6 +22,7 @@ from app.schemas.outline import (
     OutlineSaveRequest,
     OutlineScene,
 )
+from app.services.materials import MaterialBundle, load_course_materials
 from app.services.outline_prompt import SYSTEM_PROMPT, build_outline_user_prompt
 from app.services.outline_schema import (
     NormalizedOutline,
@@ -34,14 +33,6 @@ from app.services.outline_schema import (
 from app.services.providers import ProviderConfigService, ResolvedProvider
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class MaterialBundle:
-    text: str
-    asset_count: int
-    char_count: int
-    truncated: bool
 
 
 class OutlineService:
@@ -56,7 +47,12 @@ class OutlineService:
         payload: OutlineGenerateRequest,
     ) -> CourseOutlineResponse:
         course = await self._get_course(owner.id, course_id)
-        materials = await self._load_materials(owner.id, course.id)
+        materials = await load_course_materials(
+            self.db,
+            owner.id,
+            course.id,
+            self.settings.outline_material_char_limit,
+        )
         resolved = await ProviderConfigService(
             self.db, self.settings
         ).resolve_for_generation(owner, payload.provider_id)
@@ -351,56 +347,6 @@ class OutlineService:
                     parts.append(item["text"])
             return "".join(parts)
         return str(content)
-
-    async def _load_materials(self, owner_id: UUID, course_id: UUID) -> MaterialBundle:
-        result = await self.db.execute(
-            select(
-                Asset.filename,
-                AssetExtraction.text_content,
-                AssetExtraction.truncated,
-            )
-            .join(AssetExtraction, AssetExtraction.asset_id == Asset.id)
-            .where(
-                Asset.owner_id == owner_id,
-                Asset.course_id == course_id,
-                Asset.deleted_at.is_(None),
-                Asset.extraction_status == "ready",
-            )
-            .order_by(Asset.created_at, Asset.id)
-        )
-        rows = result.all()
-        remaining = self.settings.outline_material_char_limit
-        chunks: List[str] = []
-        asset_count = 0
-        char_count = 0
-        truncated = False
-        for filename, text_content, extraction_truncated in rows:
-            text = (text_content or "").strip()
-            if not text:
-                continue
-            header = f"\n\n[Source: {filename}]\n"
-            if remaining <= len(header):
-                truncated = True
-                break
-            available = remaining - len(header)
-            content = text[:available]
-            if len(content) < len(text):
-                truncated = True
-            chunks.append(header + content)
-            asset_count += 1
-            char_count += len(content)
-            remaining -= len(header) + len(content)
-            if extraction_truncated:
-                truncated = True
-            if remaining <= 0:
-                truncated = True
-                break
-        return MaterialBundle(
-            text="".join(chunks).strip(),
-            asset_count=asset_count,
-            char_count=char_count,
-            truncated=truncated,
-        )
 
     async def _create_version(
         self,

@@ -1,5 +1,6 @@
 from app.models.asset import Asset, AssetExtraction
 from app.models.auth_session import AuthSession
+from app.models.classroom import CourseScene, CourseStage, GenerationJob
 from app.models.course import Course
 from app.models.folder import Folder
 from app.models.outline import CourseOutline
@@ -10,9 +11,12 @@ __all__ = [
     "Asset",
     "AssetExtraction",
     "AuthSession",
+    "CourseScene",
+    "CourseStage",
     "Course",
     "Folder",
     "CourseOutline",
+    "GenerationJob",
     "ProviderConfig",
     "User",
 ]

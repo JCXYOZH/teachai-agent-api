@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4A 已实现基于大纲的课堂 DSL 生成与任务状态查询。
 
 ## 技术栈
 
@@ -67,6 +67,9 @@ Copy-Item .env.example .env
 | POST | `/api/v1/providers/{id}/test` | 真实生成请求测试，支持临时覆盖值 |
 | GET/PUT | `/api/v1/courses/{id}/outline` | 读取或手动保存课程大纲 |
 | POST | `/api/v1/courses/{id}/outline/generate` | 基于课程素材生成版本化大纲 |
+| POST | `/api/v1/courses/{id}/classroom/generate` | 基于最新大纲生成课堂与场景 |
+| GET | `/api/v1/courses/{id}/classroom` | 获取最新课堂版本与场景 |
+| GET | `/api/v1/classroom/jobs/{id}` | 查询课堂生成任务状态 |
 
 错误统一返回：
 
@@ -80,6 +83,13 @@ Copy-Item .env.example .env
 - 大纲版本、素材截断、JSON 宽容解析与重试策略见 `docs/outlines.md`。
 - 连接测试会真实请求 `/chat/completions` 或 Anthropic `/messages`；`/models` 仅用于补充模型列表。
 - Qwen 优先读取 `QWEN_API_KEY`，为空时回退到 `DASHSCOPE_API_KEY`。可用 `scripts/check_qwen.py` 验证 `qwen3.8-omni-flash`。
+
+## 课堂生成
+
+- 课堂 DSL 版本固定为 `0.12.0`，幻灯片画布为 1280×720 深色主题。
+- 每次生成创建新的课堂版本，场景与旁白动作一起保存。
+- 生成失败会把任务标记为 `failed` 并记录错误码，重试后仍失败返回 `CLASSROOM_INVALID_RESPONSE`。
+- 生成流程、场景格式与真实模型诊断见 `docs/classroom.md`。
 
 ## 认证设计
 
@@ -119,5 +129,6 @@ docker compose up -d
 
 ## 后续阶段
 
-1. 场景 DSL、生成 Worker、事件流与课堂渲染。
-2. TTS、图片生成、导出与生产部署。
+1. 课堂渲染器与深色沉浸式播放界面（4B）。
+2. 互动场景、课堂动作与事件流（4C）。
+3. TTS、图片生成、导出与生产部署。

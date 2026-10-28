@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     provider_test_timeout_seconds: float = 20.0
     outline_material_char_limit: int = 16_000
     outline_generation_timeout_seconds: float = 600.0
+    classroom_material_char_limit: int = 12_000
+    classroom_generation_timeout_seconds: float = 600.0
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     deepseek_api_key: str = ""
@@ -97,6 +99,20 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "OUTLINE_GENERATION_TIMEOUT_SECONDS must be between 60 and 1800"
+            )
+        if (
+            self.classroom_material_char_limit < 1000
+            or self.classroom_material_char_limit > 200_000
+        ):
+            raise ValueError(
+                "CLASSROOM_MATERIAL_CHAR_LIMIT must be between 1000 and 200000"
+            )
+        if (
+            self.classroom_generation_timeout_seconds < 60
+            or self.classroom_generation_timeout_seconds > 1800
+        ):
+            raise ValueError(
+                "CLASSROOM_GENERATION_TIMEOUT_SECONDS must be between 60 and 1800"
             )
         return self
 
