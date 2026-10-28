@@ -15,7 +15,12 @@ async def test_readiness_checks_database(client: AsyncClient) -> None:
     response = await client.get('/api/v1/health/ready')
 
     assert response.status_code == 200
-    assert response.json() == {'status': 'ready', 'checks': {'database': 'ok'}, 'detail': None}
+    body = response.json()
+    assert body['status'] == 'ready'
+    assert body['detail'] is None
+    assert body['checks']['database'] == 'ok'
+    assert body['checks']['storage']['status'] == 'ok'
+    assert body['checks']['storage']['free_bytes'] > 0
 
 
 async def test_request_id_is_echoed_when_valid(client: AsyncClient) -> None:

@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。开发阶段 1 已完成用户认证、数据库基线与运行时健康检查。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索。
 
 ## 技术栈
 
@@ -38,7 +38,7 @@ Copy-Item .env.example .env
 
 ## 资产存储
 
-上传资产使用本地磁盘，默认根目录为 `E:\Backups\Data\TeachAIAgent`，可通过 `ASSET_STORAGE_ROOT` 覆盖。PostgreSQL 只保存资产元数据与所有权，文件字节不进入数据库。目录不会通过 `/static` 暴露，下载必须经过鉴权 API。
+上传资产使用本地磁盘，默认根目录为 `E:\Backups\Data\TeachAIAgent`，可通过 `ASSET_STORAGE_ROOT` 覆盖。PostgreSQL 保存资产元数据、所有权与解析文本，原始文件字节不进入数据库。目录不会通过 `/static` 暴露，下载必须经过鉴权 API。
 
 详细目录布局、备份要求和安全约束见 `docs/asset-storage.md`。
 
@@ -53,6 +53,14 @@ Copy-Item .env.example .env
 | GET | `/api/v1/auth/me` | 当前用户 |
 | GET | `/api/v1/health` | 存活检查 |
 | GET | `/api/v1/health/ready` | 数据库就绪检查 |
+| GET/POST | `/api/v1/folders` | 文件夹列表与创建 |
+| PATCH/DELETE | `/api/v1/folders/{id}` | 文件夹更新与删除 |
+| GET/POST | `/api/v1/courses` | 课程列表与创建 |
+| GET/PATCH/DELETE | `/api/v1/courses/{id}` | 课程详情、更新与软删除 |
+| GET/POST | `/api/v1/assets` | 素材列表与上传解析 |
+| GET/PATCH/DELETE | `/api/v1/assets/{id}` | 素材详情、编辑与软删除 |
+| GET | `/api/v1/assets/{id}/download` | 鉴权下载原文件 |
+| GET | `/api/v1/search` | 课程与素材中文检索 |
 
 错误统一返回：
 
@@ -73,13 +81,14 @@ Copy-Item .env.example .env
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe scripts\check_migrations.py
+.\.venv\Scripts\python.exe scripts\check_extensions.py
 ```
 
 `check_migrations.py` 只允许连接名称以 `_test` 结尾的数据库。
 
 ## llama.cpp
 
-本地模型端点默认为：http://127.0.0.1:65535/v1 <br>
+本地模型端点配置为：http://127.0.0.1:65535/v1 <br>
 启动模型后运行：
 
 ```powershell
@@ -97,7 +106,6 @@ docker compose up -d
 
 ## 后续阶段
 
-1. 课程、文件夹、素材 CRUD、本地磁盘资产存储与中文检索。
-2. Provider 抽象、模型配置与课程大纲生成。
-3. 场景 DSL、生成 Worker、事件流与课堂渲染。
-4. TTS、图片生成、导出与生产部署。
+1. Provider 抽象、模型配置与课程大纲生成。
+2. 场景 DSL、生成 Worker、事件流与课堂渲染。
+3. TTS、图片生成、导出与生产部署。

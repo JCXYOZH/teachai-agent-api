@@ -1,4 +1,6 @@
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,8 @@ os.environ['APP_ENV'] = 'test'
 os.environ['JWT_SECRET'] = 'test-only-jwt-secret-7f3c1a9e5b2d8f4c6a0e1d3b7c9f2a5e'
 os.environ['COOKIE_SECURE'] = 'false'
 os.environ['LOG_LEVEL'] = 'WARNING'
+TEST_ASSET_ROOT = Path(tempfile.mkdtemp(prefix='teachai-test-assets-'))
+os.environ['ASSET_STORAGE_ROOT'] = str(TEST_ASSET_ROOT)
 
 from app.db.session import engine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -34,11 +38,17 @@ def migrate_database() -> None:
 
 @pytest.fixture(autouse=True)
 async def clean_database(migrate_database) -> None:
+    shutil.rmtree(str(TEST_ASSET_ROOT), ignore_errors=True)
+    TEST_ASSET_ROOT.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as connection:
         await connection.execute(
-            text('TRUNCATE TABLE auth_sessions, users RESTART IDENTITY CASCADE')
+            text(
+                'TRUNCATE TABLE asset_extractions, assets, courses, folders, '
+                'auth_sessions, users RESTART IDENTITY CASCADE'
+            )
         )
     yield
+    shutil.rmtree(str(TEST_ASSET_ROOT), ignore_errors=True)
     await engine.dispose()
 
 

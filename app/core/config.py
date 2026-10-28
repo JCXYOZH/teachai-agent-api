@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "teachai_csrf"
 
     asset_storage_root: Path = Path(r"E:\Backups\Data\TeachAIAgent")
+    asset_max_bytes: int = 50 * 1024 * 1024
+    asset_max_extracted_chars: int = 2_000_000
+    asset_parse_timeout_seconds: float = 60.0
 
     llama_base_url: str = "http://127.0.0.1:65535/v1"
     llama_api_key: str = ""
@@ -56,6 +59,17 @@ class Settings(BaseSettings):
             raise ValueError("REFRESH_TOKEN_DAYS must be between 1 and 365")
         if not self.asset_storage_root.is_absolute():
             raise ValueError("ASSET_STORAGE_ROOT must be an absolute path")
+        if self.asset_max_bytes < 1 or self.asset_max_bytes > 1024 * 1024 * 1024:
+            raise ValueError("ASSET_MAX_BYTES must be between 1 and 1073741824")
+        if (
+            self.asset_max_extracted_chars < 1000
+            or self.asset_max_extracted_chars > 20_000_000
+        ):
+            raise ValueError(
+                "ASSET_MAX_EXTRACTED_CHARS must be between 1000 and 20000000"
+            )
+        if self.asset_parse_timeout_seconds < 1 or self.asset_parse_timeout_seconds > 600:
+            raise ValueError("ASSET_PARSE_TIMEOUT_SECONDS must be between 1 and 600")
         return self
 
     @property

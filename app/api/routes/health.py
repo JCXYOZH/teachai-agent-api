@@ -2,11 +2,13 @@ import asyncio
 import logging
 
 from fastapi import APIRouter
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import check_database
 from app.schemas.common import HealthResponse, ReadyResponse
+from app.services.storage import LocalAssetStorage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
@@ -34,4 +36,27 @@ async def readiness() -> ReadyResponse:
             "Database is not ready",
         ) from exc
 
-    return ReadyResponse(status="ready", checks={"database": "ok"})
+    try:
+        free_bytes, total_bytes = await asyncio.wait_for(
+            run_in_threadpool(LocalAssetStorage(settings).readiness),
+            timeout=5.0,
+        )
+    except Exception as exc:
+        logger.warning("storage_readiness_failed error=%s", type(exc).__name__)
+        raise AppError(
+            503,
+            "STORAGE_UNAVAILABLE",
+            "Asset storage is not ready",
+        ) from exc
+
+    return ReadyResponse(
+        status="ready",
+        checks={
+            "database": "ok",
+            "storage": {
+                "status": "ok",
+                "free_bytes": free_bytes,
+                "total_bytes": total_bytes,
+            },
+        },
+    )
