@@ -11,6 +11,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     display_name: Optional[str] = Field(default=None, max_length=80)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
     @field_validator("password")
     @classmethod
@@ -37,6 +38,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class SendRegistrationCodeRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    email: EmailStr
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,4 +58,10 @@ class AuthResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserResponse
+
+
+class RegistrationCodeResponse(BaseModel):
+    email: EmailStr
+    expires_in: int
+    resend_after: int
 

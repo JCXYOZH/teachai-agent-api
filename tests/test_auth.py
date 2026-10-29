@@ -1,7 +1,15 @@
+from datetime import timedelta
+
 from httpx import ASGITransport, AsyncClient, Response
+from sqlalchemy import update
+from support import register_and_verify
 
 from app.core.config import settings
+from app.core.time import utcnow
+from app.db.session import AsyncSessionLocal
 from app.main import app
+from app.models.email_verification import EmailVerification
+from app.services.email import last_verification_code
 
 REGISTER_PAYLOAD = {
     'email': 'learner@example.com',
@@ -10,10 +18,18 @@ REGISTER_PAYLOAD = {
 }
 REFRESH_PATH = f'{settings.api_v1_prefix}/auth/refresh'
 LOGOUT_PATH = f'{settings.api_v1_prefix}/auth/logout'
+REGISTER_PATH = f'{settings.api_v1_prefix}/auth/register'
+SEND_CODE_PATH = f'{settings.api_v1_prefix}/auth/register/send-code'
+LOGIN_PATH = f'{settings.api_v1_prefix}/auth/login'
 
 
 async def register_user(client: AsyncClient) -> Response:
-    return await client.post(f'{settings.api_v1_prefix}/auth/register', json=REGISTER_PAYLOAD)
+    return await register_and_verify(
+        client,
+        str(REGISTER_PAYLOAD['email']),
+        str(REGISTER_PAYLOAD['password']),
+        str(REGISTER_PAYLOAD['display_name']),
+    )
 
 
 def csrf_headers(client: AsyncClient) -> dict:
@@ -24,15 +40,50 @@ def set_cookie(client: AsyncClient, name: str, value: str, path: str) -> None:
     client.cookies.set(name, value, domain='testserver.local', path=path)
 
 
-async def test_register_returns_user_and_sets_secure_cookies(client: AsyncClient) -> None:
-    response = await register_user(client)
+async def test_send_code_creates_pending_verification_without_account(
+    client: AsyncClient,
+) -> None:
+    response = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body['email'] == REGISTER_PAYLOAD['email']
+    assert body['expires_in'] == settings.verification_code_ttl_seconds
+    assert body['resend_after'] == settings.verification_resend_seconds
+    assert client.cookies.get(settings.refresh_cookie_name) is None
+
+    login_response = await client.post(
+        LOGIN_PATH,
+        json={
+            'email': REGISTER_PAYLOAD['email'],
+            'password': REGISTER_PAYLOAD['password'],
+        },
+    )
+    assert login_response.status_code == 401
+
+
+async def test_register_with_valid_code_returns_user_and_sets_secure_cookies(
+    client: AsyncClient,
+) -> None:
+    sent = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert sent.status_code == 202
+    code = last_verification_code(str(REGISTER_PAYLOAD['email']))
+    assert code
+
+    response = await client.post(
+        REGISTER_PATH,
+        json={**REGISTER_PAYLOAD, 'code': code},
+    )
 
     assert response.status_code == 201
     body = response.json()
     assert body['token_type'] == 'bearer'
     assert body['expires_in'] == settings.access_token_minutes * 60
     assert body['user']['email'] == REGISTER_PAYLOAD['email']
-    assert 'refresh_token' not in body
     assert client.cookies.get(settings.refresh_cookie_name)
     assert client.cookies.get(settings.csrf_cookie_name)
 
@@ -49,13 +100,147 @@ async def test_register_returns_user_and_sets_secure_cookies(client: AsyncClient
     assert 'Path=/' in csrf_header
 
 
-async def test_registration_rejects_duplicate_email(client: AsyncClient) -> None:
-    assert (await register_user(client)).status_code == 201
+async def test_send_code_rejects_duplicate_verified_email(client: AsyncClient) -> None:
+    await register_user(client)
 
-    response = await register_user(client)
+    response = await client.post(
+        SEND_CODE_PATH,
+        json={'email': 'Learner@Example.com '},
+    )
 
     assert response.status_code == 409
     assert response.json()['error']['code'] == 'EMAIL_ALREADY_REGISTERED'
+
+
+async def test_existing_account_keeps_original_password(client: AsyncClient) -> None:
+    await register_user(client)
+
+    response = await client.post(
+        SEND_CODE_PATH,
+        json={'email': REGISTER_PAYLOAD['email']},
+    )
+
+    assert response.status_code == 409
+    login_response = await client.post(
+        LOGIN_PATH,
+        json={
+            'email': REGISTER_PAYLOAD['email'],
+            'password': REGISTER_PAYLOAD['password'],
+        },
+    )
+    assert login_response.status_code == 200
+    rejected = await client.post(
+        LOGIN_PATH,
+        json={'email': REGISTER_PAYLOAD['email'], 'password': 'Attacker1234'},
+    )
+    assert rejected.status_code == 401
+
+
+async def test_wrong_verification_code_tracks_attempts(client: AsyncClient) -> None:
+    sent = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert sent.status_code == 202
+    code = last_verification_code(str(REGISTER_PAYLOAD['email']))
+    assert code
+    wrong_code = '000000' if code != '000000' else '000001'
+
+    wrong = await client.post(
+        REGISTER_PATH,
+        json={**REGISTER_PAYLOAD, 'code': wrong_code},
+    )
+
+    assert wrong.status_code == 400
+    assert wrong.json()['error']['code'] == 'INVALID_VERIFICATION_CODE'
+    assert wrong.json()['error']['details']['attempts_remaining'] == settings.verification_max_attempts - 1
+
+    verified = await client.post(
+        REGISTER_PATH,
+        json={**REGISTER_PAYLOAD, 'code': code},
+    )
+    assert verified.status_code == 201
+
+
+async def test_verification_attempts_are_limited(client: AsyncClient) -> None:
+    sent = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert sent.status_code == 202
+    code = last_verification_code(str(REGISTER_PAYLOAD['email']))
+    assert code
+    wrong_code = '000000' if code != '000000' else '000001'
+
+    for _ in range(settings.verification_max_attempts):
+        rejected = await client.post(
+            REGISTER_PATH,
+            json={**REGISTER_PAYLOAD, 'code': wrong_code},
+        )
+        assert rejected.status_code == 400
+
+    blocked = await client.post(
+        REGISTER_PATH,
+        json={**REGISTER_PAYLOAD, 'code': code},
+    )
+
+    assert blocked.status_code == 429
+    assert blocked.json()['error']['code'] == 'VERIFICATION_ATTEMPTS_EXCEEDED'
+
+
+async def test_expired_verification_code_is_rejected(client: AsyncClient) -> None:
+    sent = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert sent.status_code == 202
+    code = last_verification_code(str(REGISTER_PAYLOAD['email']))
+    assert code
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(EmailVerification)
+            .where(EmailVerification.email == REGISTER_PAYLOAD['email'])
+            .values(expires_at=utcnow() - timedelta(seconds=1))
+        )
+        await db.commit()
+
+    response = await client.post(
+        REGISTER_PATH,
+        json={**REGISTER_PAYLOAD, 'code': code},
+    )
+
+    assert response.status_code == 400
+    assert response.json()['error']['code'] == 'VERIFICATION_CODE_EXPIRED'
+
+
+async def test_verification_code_send_respects_cooldown(client: AsyncClient) -> None:
+    sent = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert sent.status_code == 202
+
+    too_soon = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert too_soon.status_code == 429
+    assert too_soon.json()['error']['code'] == 'VERIFICATION_RESEND_TOO_SOON'
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(EmailVerification)
+            .where(EmailVerification.email == REGISTER_PAYLOAD['email'])
+            .values(last_sent_at=utcnow() - timedelta(hours=1))
+        )
+        await db.commit()
+
+    resent = await client.post(
+        SEND_CODE_PATH, json={'email': REGISTER_PAYLOAD['email']}
+    )
+    assert resent.status_code == 202
+    code = last_verification_code(str(REGISTER_PAYLOAD['email']))
+    verified = await client.post(
+        REGISTER_PATH,
+        json={**REGISTER_PAYLOAD, 'code': code},
+    )
+    assert verified.status_code == 201
 
 
 async def test_login_and_current_user(client: AsyncClient) -> None:
@@ -105,9 +290,15 @@ async def test_me_requires_valid_bearer_token(client: AsyncClient) -> None:
 
 
 async def test_registration_validates_password_policy(client: AsyncClient) -> None:
+    email = 'weak@example.com'
+    sent = await client.post(SEND_CODE_PATH, json={'email': email})
+    assert sent.status_code == 202
+    code = last_verification_code(email)
+    assert code
+
     response = await client.post(
-        f'{settings.api_v1_prefix}/auth/register',
-        json={'email': 'weak@example.com', 'password': 'onlyletters'},
+        REGISTER_PATH,
+        json={'email': email, 'password': 'onlyletters', 'code': code},
     )
 
     assert response.status_code == 422

@@ -5,6 +5,7 @@ import fitz
 from docx import Document
 from httpx import AsyncClient
 from pptx import Presentation
+from support import register_and_verify
 
 from app.core.config import settings
 
@@ -14,15 +15,9 @@ async def register_user(
     email: str = 'teacher@example.com',
     display_name: str = 'Teacher',
 ) -> Tuple[Dict[str, str], str]:
-    response = await client.post(
-        f'{settings.api_v1_prefix}/auth/register',
-        json={
-            'email': email,
-            'password': 'Teach1234',
-            'display_name': display_name,
-        },
+    response = await register_and_verify(
+        client, email, display_name=display_name
     )
-    assert response.status_code == 201
     body = response.json()
     return {'Authorization': f"Bearer {body['access_token']}"}, body['user']['id']
 

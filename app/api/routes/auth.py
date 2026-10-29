@@ -14,6 +14,8 @@ from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
     RegisterRequest,
+    RegistrationCodeResponse,
+    SendRegistrationCodeRequest,
     UserResponse,
 )
 from app.services.auth import AuthService, IssuedSession
@@ -87,7 +89,28 @@ def _require_csrf(request: Request) -> tuple:
     return csrf_header, csrf_cookie
 
 
-@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register/send-code",
+    response_model=RegistrationCodeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def send_registration_code(
+    payload: SendRegistrationCodeRequest,
+    db: AsyncSession = Depends(get_db),
+) -> RegistrationCodeResponse:
+    pending = await AuthService(db, settings).send_registration_code(payload)
+    return RegistrationCodeResponse(
+        email=pending.email,
+        expires_in=pending.expires_in,
+        resend_after=pending.resend_after,
+    )
+
+
+@router.post(
+    "/register",
+    response_model=AuthResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def register(
     payload: RegisterRequest,
     request: Request,

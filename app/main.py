@@ -15,6 +15,7 @@ from app.core.errors import install_error_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.db.session import engine
+from app.services.auth import purge_stale_verifications
 from app.services.generation_jobs import recover_interrupted_jobs
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -27,6 +28,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await recover_interrupted_jobs()
     except Exception:
         logger.exception("generation_job_recovery_failed")
+    try:
+        purged = await purge_stale_verifications()
+        if purged:
+            logger.info("email_verifications_purged count=%s", purged)
+    except Exception:
+        logger.exception("email_verification_purge_failed")
     yield
     await engine.dispose()
 

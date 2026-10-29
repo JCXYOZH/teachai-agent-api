@@ -61,12 +61,44 @@ class Settings(BaseSettings):
     glm_api_key: str = ""
     kimi_api_key: str = ""
 
+    # Registration email verification. Use "agentsend" outside development.
+    email_delivery: str = "log"
+    agentsend_api_key: str = ""
+    agentsend_inbox_name: str = "teachai-support"
+    agentsend_inbox_id: str = ""
+    agentsend_base_url: str = "https://api.agentsend.io"
+    agentsend_timeout_seconds: float = 20.0
+    verification_code_ttl_seconds: int = 600
+    verification_resend_seconds: int = 60
+    verification_max_attempts: int = 5
+
     @model_validator(mode="after")
     def validate_security_config(self) -> "Settings":
         if self.app_env == "production" and self.jwt_secret == DEFAULT_JWT_SECRET:
             raise ValueError("JWT_SECRET must be changed in production")
         if len(self.jwt_secret) < 32:
             raise ValueError("JWT_SECRET must contain at least 32 characters")
+        if self.email_delivery not in {"memory", "log", "agentsend"}:
+            raise ValueError("EMAIL_DELIVERY must be memory, log or agentsend")
+        if self.app_env == "production" and self.email_delivery != "agentsend":
+            raise ValueError("EMAIL_DELIVERY must be agentsend in production")
+        if self.email_delivery == "agentsend" and not self.agentsend_api_key:
+            raise ValueError("AGENTSEND_API_KEY is required for agentsend delivery")
+        if not self.agentsend_base_url.startswith(("http://", "https://")):
+            raise ValueError("AGENTSEND_BASE_URL must be an HTTP(S) URL")
+        if (
+            self.app_env == "production"
+            and not self.agentsend_base_url.startswith("https://")
+        ):
+            raise ValueError("AGENTSEND_BASE_URL must use HTTPS in production")
+        if not 1 <= self.agentsend_timeout_seconds <= 120:
+            raise ValueError("AGENTSEND_TIMEOUT_SECONDS must be between 1 and 120")
+        if not 60 <= self.verification_code_ttl_seconds <= 3600:
+            raise ValueError("VERIFICATION_CODE_TTL_SECONDS must be between 60 and 3600")
+        if not 10 <= self.verification_resend_seconds <= 600:
+            raise ValueError("VERIFICATION_RESEND_SECONDS must be between 10 and 600")
+        if not 3 <= self.verification_max_attempts <= 10:
+            raise ValueError("VERIFICATION_MAX_ATTEMPTS must be between 3 and 10")
         if self.access_token_minutes < 1 or self.access_token_minutes > 1440:
             raise ValueError("ACCESS_TOKEN_MINUTES must be between 1 and 1440")
         if self.refresh_token_days < 1 or self.refresh_token_days > 365:

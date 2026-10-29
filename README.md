@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4A 已实现基于大纲的课堂 DSL 生成与任务状态查询。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册。
 
 ## 技术栈
 
@@ -46,7 +46,8 @@ Copy-Item .env.example .env
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/v1/auth/register` | 注册并建立会话 |
+| POST | `/api/v1/auth/register/send-code` | 发送注册邮箱验证码，返回 202 |
+| POST | `/api/v1/auth/register` | 校验验证码并创建用户，建立会话 |
 | POST | `/api/v1/auth/login` | 登录 |
 | POST | `/api/v1/auth/refresh` | 轮换 refresh token |
 | POST | `/api/v1/auth/logout` | 撤销当前会话 |
@@ -93,11 +94,18 @@ Copy-Item .env.example .env
 
 ## 认证设计
 
+- 注册采用“先发送验证码、再一次性提交账号信息”的两步流程。验证码通过后才创建 `users` 行，因此重复注册无法覆盖已有账号。
+- 邮箱统一 `strip().lower()` 规范化，数据库另有 `lower(email)` 唯一索引兜底。
+- 验证码为 6 位数字，默认 10 分钟有效、60 秒重发冷却、最多 5 次尝试；数据库只保存 HMAC-SHA256 摘要。
+- 开发环境 `EMAIL_DELIVERY=log` 会把验证码写入后端日志；配置 `EMAIL_DELIVERY=agentsend` 后通过 agentsend REST API 发送真实邮件。生产环境强制使用 `agentsend`。
+- 密钥只放在 `.env` 的 `AGENTSEND_API_KEY`，不得提交到仓库；inbox 按 `AGENTSEND_INBOX_NAME` 复用，也可用 `AGENTSEND_INBOX_ID` 固定。
 - access token 通过 `Authorization: Bearer` 传递，默认 15 分钟。
 - refresh token 仅保存在 HttpOnly cookie 中，数据库只保存 SHA-256 摘要，默认 30 天。
 - 每次刷新都会撤销旧 token 并轮换 refresh token 与 CSRF token。
 - refresh/logout 需要 `X-CSRF-Token`，其值与 `teachai_csrf` cookie 及数据库会话绑定。
 - 所有课程、素材、会话和设置查询后续都必须按当前用户隔离。
+
+注册流程、错误码与邮件配置见 `docs/auth.md`。
 
 ## 测试
 

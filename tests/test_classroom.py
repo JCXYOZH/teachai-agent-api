@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from httpx import AsyncClient
 from sqlalchemy import select
+from support import register_and_verify
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
@@ -86,11 +87,7 @@ def classroom_json(payload: Dict[str, Any] = CLASSROOM_RESPONSE) -> str:
 
 
 async def register_user(client: AsyncClient, email: str = "classroom@example.com") -> Dict[str, str]:
-    response = await client.post(
-        f"{API}/auth/register",
-        json={"email": email, "password": "Teach1234", "display_name": "Classroom"},
-    )
-    assert response.status_code == 201, response.text
+    response = await register_and_verify(client, email, display_name="Classroom")
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 

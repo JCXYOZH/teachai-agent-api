@@ -4,6 +4,7 @@ from typing import Any, Dict, Tuple
 import httpx
 from httpx import AsyncClient
 from sqlalchemy import select
+from support import register_and_verify
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
@@ -17,15 +18,9 @@ PROVIDER_PATH = f"{settings.api_v1_prefix}/providers"
 async def register_user(
     client: AsyncClient, email: str = "provider@example.com"
 ) -> Tuple[Dict[str, str], str]:
-    response = await client.post(
-        f"{settings.api_v1_prefix}/auth/register",
-        json={
-            "email": email,
-            "password": "Teach1234",
-            "display_name": "Provider Tester",
-        },
+    response = await register_and_verify(
+        client, email, display_name="Provider Tester"
     )
-    assert response.status_code == 201, response.text
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}, response.json()["user"]["id"]
 
