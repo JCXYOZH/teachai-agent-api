@@ -127,6 +127,10 @@ class GenerationJob(Base):
             "status IN ('queued', 'running', 'completed', 'failed')",
             name='generation_job_status',
         ),
+        CheckConstraint(
+            "kind IN ('outline', 'classroom')",
+            name='generation_job_kind',
+        ),
         CheckConstraint('progress >= 0 AND progress <= 100', name='generation_job_progress'),
         CheckConstraint('scene_count >= 0', name='generation_job_scene_count'),
         Index('ix_generation_jobs_owner_created', 'owner_id', 'created_at'),
@@ -158,6 +162,12 @@ class GenerationJob(Base):
     )
     provider_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     model_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default='classroom', server_default=text("'classroom'")
+    )
+    payload: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default='queued', server_default=text("'queued'")
     )

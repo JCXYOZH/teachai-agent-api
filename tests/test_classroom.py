@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -8,14 +8,46 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.classroom import GenerationJob
+from app.models.course import Course
 from app.services.classroom_dsl import DSL_VERSION, compile_scenes
 from app.services.classroom_schema import (
     ClassroomParseError,
     normalize_classroom_plan,
 )
 from app.services.classrooms import ClassroomService
+from app.services.generation_jobs import recover_interrupted_jobs
+from app.services.provider_registry import get_provider_spec
+from app.services.providers import ResolvedProvider
 
 API = settings.api_v1_prefix
+
+
+async def test_classroom_local_provider_disables_thinking(monkeypatch: Any) -> None:
+    captured: Dict[str, Any] = {}
+
+    async def fake_call(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr("app.services.classrooms.call_openai_compatible", fake_call)
+    spec = get_provider_spec("llama-local")
+    assert spec is not None
+    service = ClassroomService(None, settings)  # type: ignore[arg-type]
+
+    await service._call_provider(
+        ResolvedProvider(
+            spec=spec,
+            config=None,
+            api_key=None,
+            api_key_source=None,
+            base_url="http://127.0.0.1:65535/v1",
+            default_model="Qwen3.6-35B-A3B",
+        ),
+        "system",
+        "user",
+    )
+
+    assert captured["disable_thinking"] is True
 
 
 CLASSROOM_RESPONSE: Dict[str, Any] = {
@@ -60,6 +92,14 @@ async def register_user(client: AsyncClient, email: str = "classroom@example.com
     )
     assert response.status_code == 201, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+async def job_state(
+    client: AsyncClient, headers: Dict[str, str], job_id: str
+) -> Dict[str, Any]:
+    response = await client.get(f"{API}/generation/jobs/{job_id}", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 async def create_course(
@@ -197,7 +237,11 @@ async def test_generate_get_and_regenerate_classroom(client: AsyncClient, monkey
         json={"instructions": "强调直觉"},
     )
     assert generated.status_code == 201, generated.text
-    job = generated.json()
+    created_job = generated.json()
+    assert created_job["kind"] == "classroom"
+    assert created_job["status"] == "queued"
+
+    job = await job_state(client, headers, created_job["id"])
     assert job["status"] == "completed"
     assert job["progress"] == 100
     assert job["scene_count"] == 2
@@ -221,17 +265,15 @@ async def test_generate_get_and_regenerate_classroom(client: AsyncClient, monkey
     assert classroom["scenes"][0]["content"]["canvas"]["viewportSize"] == 1280
     assert classroom["scenes"][0]["actions"][0]["type"] == "speech"
 
-    job_response = await client.get(f"{API}/classroom/jobs/{job['id']}", headers=headers)
-    assert job_response.status_code == 200
-    assert job_response.json()["status"] == "completed"
-
     regenerated = await client.post(
         f"{API}/courses/{course_id}/classroom/generate",
         headers=headers,
         json={},
     )
     assert regenerated.status_code == 201
-    assert regenerated.json()["stage_id"] != job["stage_id"]
+    regenerated_job = await job_state(client, headers, regenerated.json()["id"])
+    assert regenerated_job["status"] == "completed"
+    assert regenerated_job["stage_id"] != job["stage_id"]
 
     latest = await client.get(f"{API}/courses/{course_id}/classroom", headers=headers)
     assert latest.json()["version"] == 2
@@ -279,7 +321,7 @@ async def test_classroom_and_jobs_are_owner_scoped(client: AsyncClient, monkeypa
     assert hidden_classroom.status_code == 404
     assert hidden_classroom.json()["error"]["code"] == "COURSE_NOT_FOUND"
 
-    hidden_job = await client.get(f"{API}/classroom/jobs/{job_id}", headers=second_headers)
+    hidden_job = await client.get(f"{API}/generation/jobs/{job_id}", headers=second_headers)
     assert hidden_job.status_code == 404
     assert hidden_job.json()["error"]["code"] == "GENERATION_JOB_NOT_FOUND"
 
@@ -308,8 +350,10 @@ async def test_invalid_model_output_marks_job_failed(client: AsyncClient, monkey
         json={},
     )
 
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "CLASSROOM_INVALID_RESPONSE"
+    assert response.status_code == 201, response.text
+    failed = await job_state(client, headers, response.json()["id"])
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "CLASSROOM_INVALID_RESPONSE"
     assert attempts == 2
 
     async with AsyncSessionLocal() as session:
@@ -317,3 +361,64 @@ async def test_invalid_model_output_marks_job_failed(client: AsyncClient, monkey
     assert job is not None
     assert job.status == "failed"
     assert job.error_code == "CLASSROOM_INVALID_RESPONSE"
+
+
+async def test_duplicate_generation_is_rejected(client: AsyncClient) -> None:
+    headers = await register_user(client, "duplicate-job@example.com")
+    course_id = await create_course(client, headers)
+    await save_outline(client, headers, course_id)
+
+    async with AsyncSessionLocal() as session:
+        owner_id = await session.scalar(
+            select(Course.owner_id).where(Course.id == UUID(course_id))
+        )
+        job = GenerationJob(
+            owner_id=owner_id,
+            course_id=UUID(course_id),
+            kind="classroom",
+            status="queued",
+            progress=0,
+            message="Queued",
+        )
+        session.add(job)
+        await session.commit()
+        existing_job_id = job.id
+
+    response = await client.post(
+        f"{API}/courses/{course_id}/classroom/generate",
+        headers=headers,
+        json={},
+    )
+
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "GENERATION_IN_PROGRESS"
+    assert error["details"]["job_id"] == str(existing_job_id)
+
+
+async def test_startup_recovery_fails_interrupted_jobs(client: AsyncClient) -> None:
+    headers = await register_user(client, "recover-job@example.com")
+    course_id = await create_course(client, headers)
+
+    async with AsyncSessionLocal() as session:
+        owner_id = await session.scalar(
+            select(Course.owner_id).where(Course.id == UUID(course_id))
+        )
+        job = GenerationJob(
+            owner_id=owner_id,
+            course_id=UUID(course_id),
+            kind="classroom",
+            status="running",
+            progress=40,
+            message="Generating classroom",
+        )
+        session.add(job)
+        await session.commit()
+        interrupted_job_id = job.id
+
+    recovered = await recover_interrupted_jobs()
+    assert recovered == 1
+
+    state = await job_state(client, headers, str(interrupted_job_id))
+    assert state["status"] == "failed"
+    assert state["error_code"] == "GENERATION_INTERRUPTED"

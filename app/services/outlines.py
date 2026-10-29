@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import httpx
@@ -13,15 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.models.classroom import GenerationJob
 from app.models.course import Course
 from app.models.outline import CourseOutline
 from app.models.user import User
+from app.schemas.classroom import GenerationJobView
 from app.schemas.outline import (
     CourseOutlineResponse,
     OutlineGenerateRequest,
     OutlineSaveRequest,
     OutlineScene,
 )
+from app.services import generation_jobs
 from app.services.materials import MaterialBundle, load_course_materials
 from app.services.outline_prompt import SYSTEM_PROMPT, build_outline_user_prompt
 from app.services.outline_schema import (
@@ -40,48 +43,107 @@ class OutlineService:
         self.db = db
         self.settings = settings
 
-    async def generate(
+    async def create_job(
         self,
         owner: User,
         course_id: UUID,
         payload: OutlineGenerateRequest,
-    ) -> CourseOutlineResponse:
+    ) -> GenerationJobView:
         course = await self._get_course(owner.id, course_id)
-        materials = await load_course_materials(
-            self.db,
-            owner.id,
-            course.id,
-            self.settings.outline_material_char_limit,
-        )
         resolved = await ProviderConfigService(
             self.db, self.settings
         ).resolve_for_generation(owner, payload.provider_id)
         if payload.model:
             resolved.default_model = payload.model
-
-        course_title = course.title
-        description = course.description
         await self.db.commit()
-
-        normalized = await self._generate_normalized_outline(
-            resolved=resolved,
-            course_title=course_title,
-            description=description,
-            instructions=payload.instructions,
-            target_scene_count=payload.scene_count,
-            materials=materials,
-        )
-        return await self._create_version(
-            owner=owner,
+        job = await generation_jobs.create_job(
+            self.db,
+            owner_id=owner.id,
             course_id=course.id,
-            source="generated",
+            kind=generation_jobs.JOB_KIND_OUTLINE,
             provider_id=resolved.spec.id,
             model_name=resolved.default_model,
-            normalized=normalized,
-            material_asset_count=materials.asset_count,
-            material_char_count=materials.char_count,
-            materials_truncated=materials.truncated,
+            payload={
+                "instructions": payload.instructions,
+                "scene_count": payload.scene_count,
+            },
+            message="Queued outline generation",
         )
+        return generation_jobs.job_view(job)
+
+    async def run_job(self, job_id: UUID) -> None:
+        job = await self.db.get(GenerationJob, job_id)
+        if job is None or job.kind != generation_jobs.JOB_KIND_OUTLINE:
+            logger.warning("outline_job_missing job_id=%s", job_id)
+            return
+        await generation_jobs.mark_running(
+            self.db, job_id, progress=10, message="Preparing materials"
+        )
+        try:
+            owner = await self.db.get(User, job.owner_id)
+            if owner is None:
+                raise AppError(404, "OWNER_NOT_FOUND", "Course owner no longer exists")
+            course = await self._get_course(owner.id, job.course_id)
+            materials = await load_course_materials(
+                self.db,
+                owner.id,
+                course.id,
+                self.settings.outline_material_char_limit,
+            )
+            resolved = await ProviderConfigService(
+                self.db, self.settings
+            ).resolve_for_generation(owner, job.provider_id)
+            if job.model_name:
+                resolved.default_model = job.model_name
+            await generation_jobs.mark_progress(
+                self.db, job_id, progress=35, message="Generating outline"
+            )
+            instructions = job.payload.get("instructions")
+            scene_count = job.payload.get("scene_count")
+            normalized = await self._generate_normalized_outline(
+                resolved=resolved,
+                course_title=course.title,
+                description=course.description,
+                instructions=instructions if isinstance(instructions, str) else None,
+                target_scene_count=scene_count if isinstance(scene_count, int) else None,
+                materials=materials,
+            )
+            await generation_jobs.mark_progress(
+                self.db, job_id, progress=90, message="Saving outline"
+            )
+            record = await self._create_version(
+                owner=owner,
+                course_id=course.id,
+                source="generated",
+                provider_id=resolved.spec.id,
+                model_name=resolved.default_model,
+                normalized=normalized,
+                material_asset_count=materials.asset_count,
+                material_char_count=materials.char_count,
+                materials_truncated=materials.truncated,
+            )
+            await generation_jobs.complete_job(
+                self.db,
+                job_id,
+                message="Outline ready",
+                outline_id=record.id,
+                scene_count=record.scene_count,
+            )
+        except AppError as exc:
+            await self.db.rollback()
+            await generation_jobs.fail_job(self.db, job_id, exc.code, exc.message)
+            logger.warning(
+                "outline_generation_failed job_id=%s code=%s", job_id, exc.code
+            )
+        except Exception:
+            await self.db.rollback()
+            logger.exception("outline_generation_crashed job_id=%s", job_id)
+            await generation_jobs.fail_job(
+                self.db,
+                job_id,
+                "OUTLINE_GENERATION_FAILED",
+                "Outline generation failed",
+            )
 
     async def get_latest(
         self, owner: User, course_id: UUID
@@ -223,6 +285,11 @@ class OutlineService:
             trust_env=False,
         )
         try:
+            model_kwargs: Dict[str, Any] = {}
+            if resolved.spec.supports_thinking_control:
+                model_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False}
+                }
             chat = ChatOpenAI(
                 model=resolved.default_model,
                 api_key=SecretStr(resolved.api_key or "local-no-key"),
@@ -232,6 +299,7 @@ class OutlineService:
                 timeout=timeout,
                 max_retries=0,
                 http_async_client=async_client,
+                model_kwargs=model_kwargs,
             )
             result = await chat.ainvoke(
                 [

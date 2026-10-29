@@ -6,9 +6,9 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/v1/courses/{course_id}/classroom/generate` | 基于最新大纲同步生成课堂并返回任务结果 |
+| POST | `/api/v1/courses/{course_id}/classroom/generate` | 创建课堂生成任务，立即返回排队中的任务 |
 | GET | `/api/v1/courses/{course_id}/classroom` | 获取最新课堂版本与全部场景 |
-| GET | `/api/v1/classroom/jobs/{job_id}` | 查询生成任务状态 |
+| GET | `/api/v1/generation/jobs/{job_id}` | 查询大纲或课堂生成任务的状态与进度 |
 
 生成请求示例：
 
@@ -22,15 +22,21 @@
 
 `provider_id` 省略时使用当前用户默认 Provider；没有默认配置时回退到 `llama-local`。`model` 可临时覆盖默认模型。生成前必须已有课程大纲，否则返回 `OUTLINE_NOT_FOUND`。
 
+接口不会等待模型返回：写入 `generation_jobs` 后立即返回 `201` 与 `status=queued` 的任务，生成在后台执行。客户端轮询该任务直到 `completed` 或 `failed`；完成时 `stage_id` 指向新课堂版本，`scene_count` 为场景数。
+
 ## 生成流程
 
-1. 读取课程、最新大纲与素材解析文本（默认最多 12,000 字符）。
-2. 创建 `generation_jobs` 记录，状态从 `queued` 进入 `running`。
-3. 调用 Provider 生成课堂 JSON，宽容接受代码围栏、前后解释和缺失字段。
+1. 请求阶段校验课程、最新大纲与 Provider，写入 `kind=classroom` 的 `queued` 任务后立即返回。
+2. 后台任务把状态置为 `running`（10%），读取素材解析文本（默认最多 12,000 字符）。
+3. 调用 Provider 生成课堂 JSON（40%），宽容接受代码围栏、前后解释和缺失字段。
 4. 编译为 DSL `0.12.0` 场景，写入 `course_stages` 与 `course_scenes`。
-5. 任务更新为 `completed`、进度 100，并关联新版本。
+5. 任务更新为 `completed`、进度 100，并关联 `stage_id` 与新版本。
 
 解析失败会自动重试一次；仍失败时返回 `CLASSROOM_INVALID_RESPONSE`，同时把任务标记为 `failed` 并记录 `error_code`。Provider 超时返回 `CLASSROOM_GENERATION_TIMEOUT`，其他 Provider 故障返回 `CLASSROOM_PROVIDER_ERROR`。
+
+同一课程同类型的生成任务只允许一个。已有任务在排队或运行时，新的 POST 返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 指向进行中的任务，客户端应改为继续轮询。服务重启时遗留的 `queued`/`running` 任务会在启动阶段标记为 `failed`，错误码为 `GENERATION_INTERRUPTED`。
+
+后台执行使用进程内任务，启动恢复也按单进程假设设计。若改为 `uvicorn --workers N`，需要换成共享队列（如 ARQ/Celery）并去掉启动时的全局恢复，否则其他 worker 正在执行的任务会被误判为中断。
 
 ## 场景格式
 

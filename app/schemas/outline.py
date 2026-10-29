@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -59,10 +59,10 @@ class OutlineScene(BaseModel):
     order: int
     language_note: Optional[str] = None
     widget_type: Optional[str] = None
-    widget_outline: Optional[Dict[str, Any]] = None
-    quiz_config: Optional[Dict[str, Any]] = None
-    pbl_config: Optional[Dict[str, Any]] = None
-    interactive_config: Optional[Dict[str, Any]] = None
+    widget_outline: Optional[Union[Dict[str, Any], List[Any]]] = None
+    quiz_config: Optional[Union[Dict[str, Any], List[Any]]] = None
+    pbl_config: Optional[Union[Dict[str, Any], List[Any]]] = None
+    interactive_config: Optional[Union[Dict[str, Any], List[Any]]] = None
     suggested_image_ids: Optional[List[str]] = None
     media_generations: Optional[Any] = None
 

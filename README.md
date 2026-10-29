@@ -66,10 +66,10 @@ Copy-Item .env.example .env
 | PUT/DELETE | `/api/v1/providers/{id}/config` | 保存或删除 Provider 配置 |
 | POST | `/api/v1/providers/{id}/test` | 真实生成请求测试，支持临时覆盖值 |
 | GET/PUT | `/api/v1/courses/{id}/outline` | 读取或手动保存课程大纲 |
-| POST | `/api/v1/courses/{id}/outline/generate` | 基于课程素材生成版本化大纲 |
-| POST | `/api/v1/courses/{id}/classroom/generate` | 基于最新大纲生成课堂与场景 |
+| POST | `/api/v1/courses/{id}/outline/generate` | 创建大纲生成任务，返回排队中的任务 |
+| POST | `/api/v1/courses/{id}/classroom/generate` | 创建课堂生成任务，返回排队中的任务 |
 | GET | `/api/v1/courses/{id}/classroom` | 获取最新课堂版本与场景 |
-| GET | `/api/v1/classroom/jobs/{id}` | 查询课堂生成任务状态 |
+| GET | `/api/v1/generation/jobs/{id}` | 查询大纲或课堂生成任务的状态与进度 |
 
 错误统一返回：
 

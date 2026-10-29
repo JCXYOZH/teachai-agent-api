@@ -14,6 +14,7 @@ class ProviderSpec:
     supports_model_discovery: bool
     default_models: Tuple[str, ...]
     env_key_setting: str
+    supports_thinking_control: bool = False
     env_key_aliases: Tuple[str, ...] = ()
     env_base_url_setting: Optional[str] = None
     env_model_setting: Optional[str] = None
@@ -104,6 +105,7 @@ PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         supports_model_discovery=True,
         default_models=("Qwen3.6-35B-A3B",),
         env_key_setting="llama_api_key",
+        supports_thinking_control=True,
         env_base_url_setting="llama_base_url",
         env_model_setting="llama_model",
     ),

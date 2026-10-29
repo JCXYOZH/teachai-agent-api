@@ -42,10 +42,16 @@ async def call_openai_compatible(
     max_tokens: int = 4096,
     temperature: float = 0.4,
     text_only: bool = False,
+    disable_thinking: bool = False,
 ) -> str:
     model_kwargs: Dict[str, Any] = {}
+    extra_body: Dict[str, Any] = {}
     if text_only:
-        model_kwargs["extra_body"] = {"modalities": ["text"]}
+        extra_body["modalities"] = ["text"]
+    if disable_thinking:
+        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+    if extra_body:
+        model_kwargs["extra_body"] = extra_body
     async_client = httpx.AsyncClient(
         timeout=httpx.Timeout(timeout),
         follow_redirects=False,
@@ -69,7 +75,18 @@ async def call_openai_compatible(
                 HumanMessage(content=user_prompt),
             ]
         )
-        return message_text(result.content)
+        text = message_text(result.content)
+        if not text.strip():
+            finish_reason = result.response_metadata.get("finish_reason")
+            logger.warning(
+                "llm_empty_content model=%s finish_reason=%s", model, finish_reason
+            )
+            raise LLMProviderError(
+                f"Model returned no content (finish_reason={finish_reason})"
+            )
+        return text
+    except LLMProviderError:
+        raise
     except Exception as exc:
         logger.warning(
             "llm_openai_failed model=%s error=%s",

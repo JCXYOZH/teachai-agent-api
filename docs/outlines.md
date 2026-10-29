@@ -6,7 +6,7 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/v1/courses/{course_id}/outline/generate` | 同步生成大纲并创建新版本 |
+| POST | `/api/v1/courses/{course_id}/outline/generate` | 创建大纲生成任务，立即返回排队中的任务 |
 | GET | `/api/v1/courses/{course_id}/outline` | 获取最新大纲 |
 | PUT | `/api/v1/courses/{course_id}/outline` | 手动保存编辑结果并创建新版本 |
 
@@ -22,6 +22,8 @@
 ```
 
 `provider_id` 省略时使用当前用户的默认 Provider；没有默认配置时回退到 `llama-local`。`model` 可临时覆盖 Provider 的默认模型。
+
+与课堂生成一致，接口返回 `201` 与 `kind=outline` 的任务（`status=queued`），不等待模型。客户端轮询 `GET /api/v1/generation/jobs/{job_id}`，任务完成时 `outline_id` 指向新版本，随后用 `GET /api/v1/courses/{course_id}/outline` 读取内容。已有大纲任务在排队或运行时，重复请求返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 可继续轮询。
 
 ## 生成行为
 

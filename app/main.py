@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -14,12 +15,18 @@ from app.core.errors import install_error_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.db.session import engine
+from app.services.generation_jobs import recover_interrupted_jobs
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    try:
+        await recover_interrupted_jobs()
+    except Exception:
+        logger.exception("generation_job_recovery_failed")
     yield
     await engine.dispose()
 
@@ -80,7 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(library.courses_router, prefix=settings.api_v1_prefix)
     app.include_router(outlines.router, prefix=settings.api_v1_prefix)
     app.include_router(classroom.router, prefix=settings.api_v1_prefix)
-    app.include_router(classroom.jobs_router, prefix=settings.api_v1_prefix)
+    app.include_router(classroom.generation_router, prefix=settings.api_v1_prefix)
     app.include_router(library.assets_router, prefix=settings.api_v1_prefix)
     app.include_router(library.search_router, prefix=settings.api_v1_prefix)
     return app

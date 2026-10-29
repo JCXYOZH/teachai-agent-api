@@ -20,6 +20,7 @@ from app.schemas.classroom import (
     GenerationJobView,
     SceneView,
 )
+from app.services import generation_jobs
 from app.services.classroom_dsl import DSL_VERSION, compile_scenes
 from app.services.classroom_prompt import (
     SYSTEM_PROMPT,
@@ -47,7 +48,7 @@ class ClassroomService:
         self.db = db
         self.settings = settings
 
-    async def generate(
+    async def create_job(
         self,
         owner: User,
         course_id: UUID,
@@ -55,47 +56,64 @@ class ClassroomService:
     ) -> GenerationJobView:
         course = await self._get_course(owner.id, course_id)
         outline = await self._get_latest_outline(owner.id, course.id)
-        materials = await load_course_materials(
-            self.db,
-            owner.id,
-            course.id,
-            self.settings.classroom_material_char_limit,
-        )
         resolved = await ProviderConfigService(self.db, self.settings).resolve_for_generation(
             owner, payload.provider_id
         )
         if payload.model:
             resolved.default_model = payload.model
-
-        job = GenerationJob(
+        await self.db.commit()
+        job = await generation_jobs.create_job(
+            self.db,
             owner_id=owner.id,
             course_id=course.id,
+            kind=generation_jobs.JOB_KIND_CLASSROOM,
             outline_id=outline.id,
             provider_id=resolved.spec.id,
             model_name=resolved.default_model,
-            status="queued",
-            progress=0,
-            message="Queued",
+            payload={"instructions": payload.instructions},
+            message="Queued classroom generation",
         )
-        self.db.add(job)
-        await self.db.commit()
-        await self.db.refresh(job)
+        return generation_jobs.job_view(job)
 
-        job.status = "running"
-        job.progress = 10
-        job.message = "Generating classroom"
-        job.started_at = utcnow()
-        await self.db.commit()
+    async def run_job(self, job_id: UUID) -> None:
+        job = await self.db.get(GenerationJob, job_id)
+        if job is None or job.kind != generation_jobs.JOB_KIND_CLASSROOM:
+            logger.warning("classroom_job_missing job_id=%s", job_id)
+            return
+        await generation_jobs.mark_running(
+            self.db, job_id, progress=10, message="Generating classroom"
+        )
 
         try:
+            owner = await self.db.get(User, job.owner_id)
+            if owner is None:
+                raise AppError(404, "OWNER_NOT_FOUND", "Course owner no longer exists")
+            course = await self._get_course(owner.id, job.course_id)
+            outline = await self._get_outline(owner.id, job.outline_id)
+            materials = await load_course_materials(
+                self.db,
+                owner.id,
+                course.id,
+                self.settings.classroom_material_char_limit,
+            )
+            resolved = await ProviderConfigService(
+                self.db, self.settings
+            ).resolve_for_generation(owner, job.provider_id)
+            if job.model_name:
+                resolved.default_model = job.model_name
+            await generation_jobs.mark_progress(
+                self.db, job_id, progress=40, message="Composing scenes"
+            )
             plan = await self._generate_plan(
                 resolved=resolved,
                 course=course,
                 outline=outline,
-                instructions=payload.instructions,
+                instructions=job.payload.get("instructions")
+                if isinstance(job.payload.get("instructions"), str)
+                else None,
                 materials=materials,
             )
-            stage = await self._create_stage(
+            await self._create_stage(
                 owner=owner,
                 course=course,
                 outline=outline,
@@ -103,24 +121,24 @@ class ClassroomService:
                 plan=plan,
             )
         except AppError as exc:
-            await self._fail_job(job.id, exc.code, exc.message)
-            raise
+            await self.db.rollback()
+            await generation_jobs.fail_job(self.db, job_id, exc.code, exc.message)
+            logger.warning(
+                "classroom_generation_failed job_id=%s code=%s", job_id, exc.code
+            )
         except Exception:
+            await self.db.rollback()
             logger.exception(
                 "classroom_generation_failed job_id=%s course_id=%s",
-                job.id,
-                course.id,
+                job_id,
+                job.course_id,
             )
-            await self._fail_job(
-                job.id,
+            await generation_jobs.fail_job(
+                self.db,
+                job_id,
                 "CLASSROOM_GENERATION_FAILED",
                 "Classroom generation failed",
             )
-            raise
-
-        await self.db.refresh(stage)
-        await self.db.refresh(job)
-        return self._job_view(job)
 
     async def get_latest(self, owner: User, course_id: UUID) -> ClassroomView:
         await self._get_course(owner.id, course_id)
@@ -148,19 +166,7 @@ class ClassroomService:
         return self._classroom_view(stage, list(scenes))
 
     async def get_job(self, owner: User, job_id: UUID) -> GenerationJobView:
-        job = await self.db.scalar(
-            select(GenerationJob).where(
-                GenerationJob.id == job_id,
-                GenerationJob.owner_id == owner.id,
-            )
-        )
-        if job is None:
-            raise AppError(
-                404,
-                "GENERATION_JOB_NOT_FOUND",
-                "Generation job not found",
-            )
-        return self._job_view(job)
+        return await generation_jobs.get_job_view(self.db, owner, job_id)
 
     async def _generate_plan(
         self,
@@ -251,6 +257,7 @@ class ClassroomService:
                 user_prompt=user_prompt,
                 timeout=timeout,
                 text_only=text_only,
+                disable_thinking=resolved.spec.supports_thinking_control,
             )
         except LLMTimeoutError as exc:
             raise AppError(
@@ -336,18 +343,6 @@ class ClassroomService:
             ) from exc
         return stage
 
-    async def _fail_job(self, job_id: UUID, error_code: str, error_message: str) -> None:
-        job = await self.db.get(GenerationJob, job_id)
-        if job is None:
-            return
-        job.status = "failed"
-        job.progress = 100
-        job.message = "Generation failed"
-        job.error_code = error_code
-        job.error_message = error_message[:2000]
-        job.completed_at = utcnow()
-        await self.db.commit()
-
     async def _get_course(self, owner_id: UUID, course_id: UUID) -> Course:
         course = await self.db.scalar(
             select(Course).where(
@@ -374,24 +369,20 @@ class ClassroomService:
             raise AppError(404, "OUTLINE_NOT_FOUND", "Course outline not found")
         return outline
 
-    def _job_view(self, job: GenerationJob) -> GenerationJobView:
-        return GenerationJobView(
-            id=job.id,
-            course_id=job.course_id,
-            outline_id=job.outline_id,
-            stage_id=job.stage_id,
-            provider_id=job.provider_id,
-            model_name=job.model_name,
-            status=job.status,  # type: ignore[arg-type]
-            progress=job.progress,
-            message=job.message,
-            error_code=job.error_code,
-            error_message=job.error_message,
-            scene_count=job.scene_count,
-            created_at=job.created_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at,
+    async def _get_outline(
+        self, owner_id: UUID, outline_id: Optional[UUID]
+    ) -> CourseOutline:
+        if outline_id is None:
+            raise AppError(404, "OUTLINE_NOT_FOUND", "Course outline not found")
+        outline = await self.db.scalar(
+            select(CourseOutline).where(
+                CourseOutline.id == outline_id,
+                CourseOutline.owner_id == owner_id,
+            )
         )
+        if outline is None:
+            raise AppError(404, "OUTLINE_NOT_FOUND", "Course outline not found")
+        return outline
 
     def _classroom_view(self, stage: CourseStage, scenes: List[CourseScene]) -> ClassroomView:
         return ClassroomView(

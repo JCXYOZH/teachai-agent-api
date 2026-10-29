@@ -8,12 +8,15 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.outline import CourseOutline
 from app.schemas.outline import OutlineSceneInput
+from app.services.outline_prompt import SYSTEM_PROMPT as OUTLINE_SYSTEM_PROMPT
 from app.services.outline_schema import (
     OutlineParseError,
     normalize_generated_outline,
     normalize_manual_outline,
 )
 from app.services.outlines import OutlineService
+from app.services.provider_registry import get_provider_spec
+from app.services.providers import ResolvedProvider
 
 API = settings.api_v1_prefix
 
@@ -57,6 +60,14 @@ async def register_user(
     )
     assert response.status_code == 201, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+async def job_state(
+    client: AsyncClient, headers: Dict[str, str], job_id: str
+) -> Dict[str, Any]:
+    response = await client.get(f"{API}/generation/jobs/{job_id}", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 async def create_course(
@@ -121,6 +132,28 @@ def test_generated_outline_accepts_bare_array_and_unknown_types() -> None:
     assert result.course_title == "课程"
     assert result.scenes[0]["type"] == "slide"
     assert result.scenes[0]["order"] == 1
+
+
+def test_generated_outline_keeps_array_widget_outline() -> None:
+    raw = json.dumps(
+        {
+            "courseTitle": "数组配置",
+            "outlines": [
+                {
+                    "type": "interactive",
+                    "title": "分类树",
+                    "description": "展示分类节点。",
+                    "widgetType": "simulation",
+                    "widgetOutline": ["展示库分类节点", "数据处理"],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    result = normalize_generated_outline(raw, "课程")
+
+    assert result.scenes[0]["widget_outline"] == ["展示库分类节点", "数据处理"]
 
 
 def test_generated_outline_rejects_invalid_json() -> None:
@@ -193,7 +226,19 @@ async def test_generate_get_regenerate_and_manual_save(
         json={"scene_count": 3, "instructions": "强调直观理解"},
     )
     assert generated.status_code == 201, generated.text
-    first = generated.json()
+    created_job = generated.json()
+    assert created_job["kind"] == "outline"
+    assert created_job["status"] == "queued"
+
+    job = await job_state(client, headers, created_job["id"])
+    assert job["status"] == "completed"
+    assert job["progress"] == 100
+    assert job["outline_id"]
+
+    fetched = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
+    assert fetched.status_code == 200
+    first = fetched.json()
+    assert first["id"] == job["outline_id"]
     assert first["version"] == 1
     assert first["source"] == "generated"
     assert first["provider_id"] == "llama-local"
@@ -204,17 +249,17 @@ async def test_generate_get_regenerate_and_manual_save(
     assert first["materials_truncated"] is False
     assert "MATERIAL-MARKER-9384" in prompts[0]
 
-    fetched = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
-    assert fetched.status_code == 200
-    assert fetched.json()["id"] == first["id"]
-
     regenerated = await client.post(
         f"{API}/courses/{course_id}/outline/generate",
         headers=headers,
         json={},
     )
     assert regenerated.status_code == 201
-    assert regenerated.json()["version"] == 2
+    regenerated_job = await job_state(client, headers, regenerated.json()["id"])
+    assert regenerated_job["status"] == "completed"
+    assert regenerated_job["outline_id"] != first["id"]
+    latest = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
+    assert latest.json()["version"] == 2
 
     saved = await client.put(
         f"{API}/courses/{course_id}/outline",
@@ -351,8 +396,95 @@ async def test_generation_fails_after_two_invalid_outputs(
         json={},
     )
 
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "OUTLINE_INVALID_RESPONSE"
+    assert response.status_code == 201, response.text
+    failed = await job_state(client, headers, response.json()["id"])
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "OUTLINE_INVALID_RESPONSE"
+
+
+async def test_outline_local_provider_disables_thinking(monkeypatch: Any) -> None:
+    captured: Dict[str, Any] = {}
+
+    class FakeResult:
+        content = '{"ok": true}'
+        response_metadata = {"finish_reason": "stop"}
+
+    class FakeChat:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def ainvoke(self, _messages: Any) -> FakeResult:
+            return FakeResult()
+
+    monkeypatch.setattr("app.services.outlines.ChatOpenAI", FakeChat)
+    spec = get_provider_spec("llama-local")
+    assert spec is not None
+    service = OutlineService(None, settings)  # type: ignore[arg-type]
+
+    raw = await service._call_openai_compatible(
+        ResolvedProvider(
+            spec=spec,
+            config=None,
+            api_key=None,
+            api_key_source=None,
+            base_url="http://127.0.0.1:65535/v1",
+            default_model="Qwen3.6-35B-A3B",
+        ),
+        OUTLINE_SYSTEM_PROMPT,
+        "user",
+    )
+
+    assert raw == '{"ok": true}'
+    assert captured["model_kwargs"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+async def test_outline_with_array_widget_outline_can_be_read(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await register_user(client, "array-widget-outline@example.com")
+    course_id = await create_course(client, headers)
+
+    async def fake_call(
+        self: OutlineService,
+        resolved: Any,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> str:
+        return json.dumps(
+            {
+                "courseTitle": "数组配置",
+                "outlines": [
+                    {
+                        "type": "interactive",
+                        "title": "分类树",
+                        "description": "展示分类节点。",
+                        "widgetType": "simulation",
+                        "widgetOutline": ["展示库分类节点", "数据处理"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(OutlineService, "_call_provider", fake_call)
+
+    generated = await client.post(
+        f"{API}/courses/{course_id}/outline/generate",
+        headers=headers,
+        json={},
+    )
+    assert generated.status_code == 201, generated.text
+    job = await job_state(client, headers, generated.json()["id"])
+    assert job["status"] == "completed"
+
+    fetched = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["scenes"][0]["widget_outline"] == [
+        "展示库分类节点",
+        "数据处理",
+    ]
 
 
 async def test_material_limit_sets_truncation_flag(
@@ -380,7 +512,11 @@ async def test_material_limit_sets_truncation_flag(
     )
 
     assert response.status_code == 201, response.text
-    body = response.json()
+    assert (await job_state(client, headers, response.json()["id"]))[
+        "status"
+    ] == "completed"
+    outline = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
+    body = outline.json()
     assert body["materials_truncated"] is True
     assert body["material_char_count"] <= 1000
 

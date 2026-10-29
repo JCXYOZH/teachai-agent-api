@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SceneType = Literal["slide", "quiz", "interactive", "pbl"]
 JobStatus = Literal["queued", "running", "completed", "failed"]
+JobKind = Literal["outline", "classroom"]
 
 
 class ClassroomGenerateRequest(BaseModel):
@@ -31,6 +32,7 @@ class GenerationJobView(BaseModel):
 
     id: UUID
     course_id: UUID
+    kind: JobKind
     outline_id: Optional[UUID]
     stage_id: Optional[UUID]
     provider_id: Optional[str]
