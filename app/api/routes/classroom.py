@@ -9,10 +9,14 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.classroom import (
     ClassroomGenerateRequest,
+    ClassroomResponseSubmitRequest,
+    ClassroomResponsesView,
+    ClassroomSubmitView,
     ClassroomView,
     GenerationJobView,
 )
 from app.services import generation_jobs
+from app.services.classroom_responses import ClassroomResponseService
 from app.services.classrooms import ClassroomService
 from app.services.generation_runner import run_generation_job
 
@@ -22,6 +26,12 @@ generation_router = APIRouter(prefix="/generation", tags=["generation"])
 
 def get_classroom_service(db: AsyncSession = Depends(get_db)) -> ClassroomService:
     return ClassroomService(db, settings)
+
+
+def get_response_service(
+    db: AsyncSession = Depends(get_db),
+) -> ClassroomResponseService:
+    return ClassroomResponseService(db, settings)
 
 
 @router.post(
@@ -50,6 +60,31 @@ async def get_classroom(
     service: ClassroomService = Depends(get_classroom_service),
 ) -> ClassroomView:
     return await service.get_latest(current_user, course_id)
+
+
+@router.put(
+    "/{course_id}/classroom/scenes/{scene_id}/responses",
+    response_model=ClassroomSubmitView,
+)
+async def submit_classroom_responses(
+    course_id: UUID,
+    scene_id: UUID,
+    payload: ClassroomResponseSubmitRequest,
+    current_user: User = Depends(get_current_user),
+    service: ClassroomResponseService = Depends(get_response_service),
+) -> ClassroomSubmitView:
+    return await service.submit(current_user, course_id, scene_id, payload)
+
+
+@router.get(
+    "/{course_id}/classroom/responses", response_model=ClassroomResponsesView
+)
+async def list_classroom_responses(
+    course_id: UUID,
+    current_user: User = Depends(get_current_user),
+    service: ClassroomResponseService = Depends(get_response_service),
+) -> ClassroomResponsesView:
+    return await service.list_responses(current_user, course_id)
 
 
 @generation_router.get("/jobs/{job_id}", response_model=GenerationJobView)

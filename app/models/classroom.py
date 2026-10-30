@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -190,6 +191,67 @@ class GenerationJob(Base):
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+
+class ClassroomResponse(Base):
+    __tablename__ = 'classroom_responses'
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('question', 'microtask')",
+            name='classroom_response_kind',
+        ),
+        CheckConstraint(
+            'score IS NULL OR score >= 0', name='classroom_response_score'
+        ),
+        CheckConstraint('max_score >= 0', name='classroom_response_max_score'),
+        UniqueConstraint(
+            'owner_id', 'scene_id', 'target_id', name='uq_classroom_responses_target'
+        ),
+        Index('ix_classroom_responses_owner_course', 'owner_id', 'course_id'),
+        Index('ix_classroom_responses_stage_scene', 'stage_id', 'scene_id'),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    owner_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey('users.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    course_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey('courses.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    stage_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey('course_stages.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    scene_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey('course_scenes.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    answer: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_score: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text('0')
+    )
+    correct: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

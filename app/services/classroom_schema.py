@@ -176,6 +176,12 @@ def _normalize_questions(value: Any) -> List[Dict[str, Any]]:
 
         if not options:
             question_type = 'short_answer'
+            if not answers:
+                answers = _text_list(
+                    raw.get('answer') or raw.get('answers'),
+                    limit=3,
+                    item_limit=300,
+                )
         elif len(answers) > 1:
             question_type = 'multiple'
         else:

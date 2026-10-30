@@ -9,6 +9,8 @@
 | POST | `/api/v1/courses/{course_id}/classroom/generate` | 创建课堂生成任务，立即返回排队中的任务 |
 | GET | `/api/v1/courses/{course_id}/classroom` | 获取最新课堂版本与全部场景 |
 | GET | `/api/v1/generation/jobs/{job_id}` | 查询大纲或课堂生成任务的状态与进度 |
+| PUT | `/api/v1/courses/{course_id}/classroom/scenes/{scene_id}/responses` | 提交或覆盖作答，返回判分结果 |
+| GET | `/api/v1/courses/{course_id}/classroom/responses` | 获取当前课堂版本已保存的作答 |
 
 生成请求示例：
 
@@ -66,6 +68,17 @@ DSL `0.13.0` 支持四类场景，其中幻灯片与测验是主体，互动与�
 ```
 
 课堂目标为 4-10 个场景，单次生成最多接受 24 个场景，其中 `interactive` 最多 4 个、`pbl` 最多 2 个。当前不生成图片、音频或视频。
+
+## 作答与判分
+
+作答与项目任务记录在 `classroom_responses`，按 `owner_id + scene_id + target_id` 唯一，重复提交会覆盖而不是追加。判分规则：
+
+- 单选题与多选题按选项值集合精确匹配，答对得 1 分；题目没有参考答案时不判分，`max_score` 记为 0。
+- 简答题只保存原文，不自动打分，返回参考答案与解析供学习者自评。
+- 项目微任务以 `{"completed": true|false}` 记录完成状态，不计入测验分数。
+- `score`/`max_score` 按场景汇总，只统计已作答且可判分的题目。
+
+生成新课堂版本后，旧版本场景的作答仍保留在库中，但查询只返回最新版本；场景不属于当前用户或课程时返回 404 `CLASSROOM_SCENE_NOT_FOUND`，题目或任务 id 不存在时返回 400 `CLASSROOM_TARGET_NOT_FOUND`。
 
 ## 版本与数据
 
