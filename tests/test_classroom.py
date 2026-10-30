@@ -49,6 +49,7 @@ async def test_classroom_local_provider_disables_thinking(monkeypatch: Any) -> N
     )
 
     assert captured["disable_thinking"] is True
+    assert captured["max_tokens"] == 8192
 
 
 CLASSROOM_RESPONSE: Dict[str, Any] = {
@@ -419,3 +420,121 @@ async def test_startup_recovery_fails_interrupted_jobs(client: AsyncClient) -> N
     state = await job_state(client, headers, str(interrupted_job_id))
     assert state["status"] == "failed"
     assert state["error_code"] == "GENERATION_INTERRUPTED"
+
+
+MIXED_RESPONSE: Dict[str, Any] = {
+    "name": "互动课堂",
+    "description": "把导入、互动实验与项目任务串起来。",
+    "style": "Deep ink classroom.",
+    "scenes": [
+        {
+            "type": "slide",
+            "title": "导入",
+            "bullets": ["要点一", "要点二"],
+            "narration": "先回顾上节课的结论。",
+        },
+        {
+            "type": "interactive",
+            "title": "拖动滑块观察",
+            "widgetType": "simulation",
+            "prompt": "调节滑块，观察曲线如何变化。",
+            "narration": "先自己试三次，再记录规律。",
+            "html": "<!doctype html><html><body><input type=range></body></html>",
+        },
+        {
+            "type": "pbl",
+            "title": "做出你的图表",
+            "narration": "现在开始一个小项目。",
+            "project": {
+                "title": "校园能耗报告",
+                "description": "统计一周能耗并给出建议。",
+                "learningObjective": "学会用数据说话。",
+                "finalDeliverable": "一页报告",
+                "milestones": [
+                    {
+                        "title": "采集数据",
+                        "deliverable": "原始表格",
+                        "microtasks": [
+                            {
+                                "title": "记录每天用电",
+                                "completionCriteria": "七天数据齐全",
+                                "hints": ["用表格记录"],
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    ],
+}
+
+
+def test_normalize_classroom_accepts_interactive_and_pbl() -> None:
+    plan = normalize_classroom_plan(json.dumps(MIXED_RESPONSE), "备用课堂")
+
+    assert [scene["type"] for scene in plan.scenes] == ["slide", "interactive", "pbl"]
+    interactive = plan.scenes[1]
+    assert interactive["widget_type"] == "simulation"
+    assert interactive["prompt"] == "调节滑块，观察曲线如何变化。"
+    assert "<input type=range>" in interactive["html"]
+
+    project = plan.scenes[2]["project"]
+    assert project["title"] == "校园能耗报告"
+    assert project["finalDeliverable"] == "一页报告"
+    assert project["milestones"][0]["microtasks"][0]["completionCriteria"] == "七天数据齐全"
+
+
+def test_normalize_classroom_falls_back_to_slide_without_interactive_html() -> None:
+    payload = {
+        "scenes": [
+            {
+                "type": "simulation",
+                "title": "缺少组件",
+                "bullets": ["只有文字"],
+                "narration": "这段旁白仍然保留。",
+            }
+        ]
+    }
+
+    plan = normalize_classroom_plan(json.dumps(payload), "备用课堂")
+
+    assert plan.scenes[0]["type"] == "slide"
+
+
+def test_compile_scenes_builds_interactive_and_pbl_content() -> None:
+    plan = normalize_classroom_plan(json.dumps(MIXED_RESPONSE), "备用课堂")
+    stage_id = uuid4()
+
+    scenes = compile_scenes(plan, stage_id, "用简体中文教学。")
+
+    slide = scenes[0]
+    assert [action["type"] for action in slide["actions"]] == [
+        "speech",
+        "reveal",
+        "reveal",
+    ]
+    bullet_ids = [
+        element["id"] for element in slide["content"]["canvas"]["elements"]
+    ]
+    assert f"{slide['id']}-bullet-1" in bullet_ids
+    assert slide["actions"][1]["elementId"] == f"{slide['id']}-bullet-1"
+
+    interactive = scenes[1]
+    assert interactive["content"]["type"] == "interactive"
+    assert interactive["content"]["widgetType"] == "simulation"
+    assert interactive["content"]["frame"] == {
+        "viewportWidth": 1280,
+        "viewportHeight": 720,
+    }
+    assert [action["type"] for action in interactive["actions"]] == [
+        "speech",
+        "highlight",
+    ]
+
+    pbl = scenes[2]
+    project = pbl["content"]["project"]
+    assert pbl["content"]["type"] == "pbl"
+    assert project["milestones"][0]["id"] == f"{pbl['id']}-m1"
+    microtask = project["milestones"][0]["microtasks"][0]
+    assert microtask["id"] == f"{pbl['id']}-m1-t1"
+    assert microtask["status"] == "todo"

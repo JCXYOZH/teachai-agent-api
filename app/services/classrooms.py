@@ -42,6 +42,8 @@ from app.services.providers import ProviderConfigService, ResolvedProvider
 
 logger = logging.getLogger(__name__)
 
+CLASSROOM_MAX_TOKENS = 8192
+
 
 class ClassroomService:
     def __init__(self, db: AsyncSession, settings: Settings) -> None:
@@ -248,6 +250,7 @@ class ClassroomService:
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     timeout=timeout,
+                    max_tokens=CLASSROOM_MAX_TOKENS,
                 )
             return await call_openai_compatible(
                 base_url=resolved.base_url,
@@ -256,6 +259,7 @@ class ClassroomService:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 timeout=timeout,
+                max_tokens=CLASSROOM_MAX_TOKENS,
                 text_only=text_only,
                 disable_thinking=resolved.spec.supports_thinking_control,
             )

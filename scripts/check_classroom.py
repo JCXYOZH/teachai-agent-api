@@ -58,7 +58,9 @@ async def run(args: argparse.Namespace, api_key: str) -> int:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             timeout=args.timeout,
+            max_tokens=args.max_tokens,
             text_only=True,
+            disable_thinking=args.disable_thinking,
         )
         plan = normalize_classroom_plan(raw, "极限与连续")
         scenes = compile_scenes(plan, uuid4(), "用简体中文教学。")
@@ -80,6 +82,25 @@ async def run(args: argparse.Namespace, api_key: str) -> int:
         return 1
 
     canvas = scenes[0]["content"].get("canvas", {})
+    details = []
+    for scene in scenes:
+        content = scene["content"]
+        item = {
+            "type": scene["type"],
+            "title": scene["title"],
+            "actions": [action["type"] for action in scene["actions"]],
+        }
+        if content["type"] == "interactive":
+            item["widgetType"] = content.get("widgetType")
+            item["html_chars"] = len(content.get("html") or "")
+        if content["type"] == "pbl":
+            project = content.get("project") or {}
+            milestones = project.get("milestones") or []
+            item["milestones"] = len(milestones)
+            item["microtasks"] = sum(
+                len(milestone.get("microtasks") or []) for milestone in milestones
+            )
+        details.append(item)
     print(
         json.dumps(
             {
@@ -87,6 +108,7 @@ async def run(args: argparse.Namespace, api_key: str) -> int:
                 "name": plan.name,
                 "scene_count": len(scenes),
                 "scene_types": [scene["type"] for scene in scenes],
+                "scene_details": details,
                 "dsl_version": DSL_VERSION,
                 "canvas": {
                     "viewportSize": canvas.get("viewportSize"),
@@ -114,6 +136,8 @@ def main() -> int:
     parser.add_argument("--model", default=os.getenv("QWEN_MODEL", "qwen3.8-omni-flash"))
     parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY")
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--disable-thinking", action="store_true")
     parser.add_argument("--instructions", default="强调直觉，并给出一个生活化例子。")
     args = parser.parse_args()
 

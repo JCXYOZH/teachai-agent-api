@@ -4,7 +4,40 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 MAX_SCENES = 24
+MAX_INTERACTIVE_SCENES = 4
+MAX_PBL_SCENES = 2
+MAX_INTERACTIVE_HTML = 200_000
 MAX_RESPONSE_BYTES = 1_000_000
+
+WIDGET_TYPES = (
+    'simulation',
+    'diagram',
+    'code',
+    'game',
+    'visualization3d',
+    'procedural-skill',
+)
+
+INTERACTIVE_SCENE_TYPES = {
+    'interactive',
+    'widget',
+    'simulation',
+    'diagram',
+    'code',
+    'game',
+    'visualization3d',
+    'visualization',
+    'procedural-skill',
+}
+
+PBL_SCENE_TYPES = {
+    'pbl',
+    'project',
+    'project-based',
+    'projectbased',
+    'task',
+    'activity',
+}
 
 
 class ClassroomParseError(ValueError):
@@ -161,6 +194,155 @@ def _normalize_questions(value: Any) -> List[Dict[str, Any]]:
     return questions
 
 
+def _clean_html(value: Any, limit: int) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if any(ord(character) < 32 and character not in '\n\t\r' for character in normalized):
+        return None
+    return normalized[:limit]
+
+
+def _narration(raw: Dict[str, Any], title: str) -> str:
+    return _clean_text(
+        raw.get('narration') or raw.get('speech') or raw.get('description'),
+        6000,
+    ) or title
+
+
+def _widget_type(raw: Dict[str, Any]) -> str:
+    value = _single_line(
+        raw.get('widgetType') or raw.get('widget_type') or raw.get('widget'), 40
+    )
+    lowered = (value or '').lower()
+    if lowered in WIDGET_TYPES:
+        return lowered
+    if lowered in INTERACTIVE_SCENE_TYPES:
+        return 'simulation' if lowered in {'interactive', 'widget'} else lowered
+    return 'simulation'
+
+
+def _normalize_interactive(
+    raw: Dict[str, Any], title: str
+) -> Optional[Dict[str, Any]]:
+    html = _clean_html(
+        raw.get('html') or raw.get('srcDoc') or raw.get('srcdoc'),
+        MAX_INTERACTIVE_HTML,
+    )
+    if not html:
+        return None
+    return {
+        'type': 'interactive',
+        'title': title,
+        'narration': _narration(raw, title),
+        'widget_type': _widget_type(raw),
+        'prompt': _clean_text(
+            raw.get('prompt') or raw.get('task') or raw.get('instructions'),
+            800,
+        ),
+        'html': html,
+    }
+
+
+def _normalize_microtasks(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    microtasks: List[Dict[str, Any]] = []
+    for item in value[:6]:
+        hint_source = item.get('hints') if isinstance(item, dict) else None
+        if isinstance(item, dict):
+            title = _single_line(
+                item.get('title') or item.get('name') or item.get('task'), 200
+            )
+            description = _clean_text(
+                item.get('description') or item.get('detail'), 800
+            )
+            criteria = _clean_text(
+                item.get('completionCriteria')
+                or item.get('completion_criteria')
+                or item.get('successWhen'),
+                400,
+            )
+        else:
+            title = _single_line(item, 200)
+            description = None
+            criteria = None
+        if not title:
+            continue
+        microtasks.append(
+            {
+                'title': title,
+                'description': description,
+                'completionCriteria': criteria,
+                'hints': _text_list(hint_source, limit=3, item_limit=200),
+            }
+        )
+    return microtasks
+
+
+def _normalize_pbl(raw: Dict[str, Any], title: str) -> Optional[Dict[str, Any]]:
+    nested = raw.get('project') if isinstance(raw.get('project'), dict) else None
+    project = nested or raw
+    raw_milestones = (
+        project.get('milestones')
+        or project.get('stages')
+        or project.get('steps')
+        or raw.get('tasks')
+    )
+    if not isinstance(raw_milestones, list):
+        return None
+
+    milestones: List[Dict[str, Any]] = []
+    for item in raw_milestones[:4]:
+        if not isinstance(item, dict):
+            item = {'title': item}
+        milestone_title = _single_line(item.get('title') or item.get('name'), 200)
+        if not milestone_title:
+            continue
+        microtasks = _normalize_microtasks(
+            item.get('microtasks')
+            or item.get('tasks')
+            or item.get('checkpoints')
+            or item.get('steps')
+        )
+        if not microtasks:
+            continue
+        milestones.append(
+            {
+                'title': milestone_title,
+                'description': _clean_text(
+                    item.get('description') or item.get('briefing'), 800
+                ),
+                'deliverable': _clean_text(
+                    item.get('deliverable') or item.get('output'), 300
+                ),
+                'microtasks': microtasks,
+            }
+        )
+
+    if not milestones:
+        return None
+
+    return {
+        'type': 'pbl',
+        'title': title,
+        'narration': _narration(raw, title),
+        'project': {
+            'title': _single_line(project.get('title') or title, 200) or title,
+            'description': _clean_text(project.get('description'), 2000) or '',
+            'learningObjective': _clean_text(
+                project.get('learningObjective') or project.get('objective'), 600
+            ),
+            'finalDeliverable': _clean_text(
+                project.get('finalDeliverable') or project.get('deliverable'), 300
+            ),
+            'milestones': milestones,
+        },
+    }
+
+
 def _slide_scene(raw: Dict[str, Any], title: str) -> Dict[str, Any]:
     bullets = _text_list(
         raw.get('bullets') or raw.get('keyPoints') or raw.get('key_points'),
@@ -211,6 +393,8 @@ def normalize_classroom_plan(raw_text: str, fallback_title: str) -> ClassroomPla
     )
 
     scenes: List[Dict[str, Any]] = []
+    interactive_count = 0
+    pbl_count = 0
     for raw in raw_scenes[:MAX_SCENES]:
         if not isinstance(raw, dict):
             continue
@@ -235,6 +419,24 @@ def normalize_classroom_plan(raw_text: str, fallback_title: str) -> ClassroomPla
                     'questions': questions,
                 }
             )
+        elif scene_type in INTERACTIVE_SCENE_TYPES:
+            interactive = None
+            if interactive_count < MAX_INTERACTIVE_SCENES:
+                interactive = _normalize_interactive(raw, title)
+            if interactive is None:
+                scenes.append(_slide_scene(raw, title))
+            else:
+                interactive_count += 1
+                scenes.append(interactive)
+        elif scene_type in PBL_SCENE_TYPES:
+            project = None
+            if pbl_count < MAX_PBL_SCENES:
+                project = _normalize_pbl(raw, title)
+            if project is None:
+                scenes.append(_slide_scene(raw, title))
+            else:
+                pbl_count += 1
+                scenes.append(project)
         else:
             scenes.append(_slide_scene(raw, title))
         if len(scenes) >= MAX_SCENES:

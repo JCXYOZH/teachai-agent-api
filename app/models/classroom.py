@@ -55,7 +55,7 @@ class CourseStage(Base):
     style: Mapped[str] = mapped_column(Text, nullable=False, default='')
     language_directive: Mapped[str] = mapped_column(Text, nullable=False, default='')
     dsl_version: Mapped[str] = mapped_column(
-        String(20), nullable=False, default='0.12.0', server_default=text("'0.12.0'")
+        String(20), nullable=False, default='0.13.0', server_default=text("'0.12.0'")
     )
     provider_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     model_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)

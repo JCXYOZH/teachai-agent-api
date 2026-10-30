@@ -40,12 +40,20 @@
 
 ## 场景格式
 
-当前阶段只生成两类场景：
+DSL `0.13.0` 支持四类场景，其中幻灯片与测验是主体，互动与项目式各最多一个：
 
-- `slide`：`content.type = "slide"`，包含 1280×720 深色画布、标题/正文/页脚文本元素。
+- `slide`：`content.type = "slide"`，包含 1280×720 深色画布，标题、逐条要点的独立文本元素与页脚。
 - `quiz`：`content.type = "quiz"`，包含 1-3 道单选题、多选题或简答题，答案与解析一并保存。
+- `interactive`：`content.type = "interactive"`，包含 `html`、`widgetType`、`prompt` 与 1280×720 的 `frame`。`html` 是模型生成的单文件组件，前端放进 `sandbox="allow-scripts"` 的 iframe 并注入禁止联网的 CSP，因此可以运行内联脚本但无法触达宿主页面或后端。
+- `pbl`：`content.type = "pbl"`，包含 `project`，下含 `learningObjective`、`finalDeliverable` 与 1-3 个 `milestones`；每个里程碑带 2-4 个 `microtasks`，微任务有稳定 `id`、完成标准与提示。
 
-每个场景都带一条 `speech` 动作，保存教师旁白文本，供后续 TTS 与播放器使用。
+动作按 `actions` 数组顺序播放：
+
+- `speech`：教师旁白文本，供后续 TTS 与播放器使用。
+- `reveal`：逐条显示幻灯片要点，`elementId` 指向该要点的画布元素。
+- `highlight`：突出互动场景画布，`elementId` 以 `-stage` 结尾，由播放器映射到场景容器。
+
+模型输出缺少 `html` 或可用里程碑时，该场景自动降级为 `slide`，保证课堂始终可播放。
 
 幻灯片画布固定参数：
 
@@ -57,13 +65,13 @@
 }
 ```
 
-课堂目标为 4-10 个场景，单次生成最多接受 24 个场景。当前不生成 `interactive`、`pbl`、图片、音频或视频。
+课堂目标为 4-10 个场景，单次生成最多接受 24 个场景，其中 `interactive` 最多 4 个、`pbl` 最多 2 个。当前不生成图片、音频或视频。
 
 ## 版本与数据
 
 - 每次成功生成都会创建新的 `course_stages` 版本，版本号从 1 递增。
 - `course_scenes` 按 `order_index` 排序，并把 `stage_id`、所有者与场景内容绑定。
-- `course_stages.dsl_version` 固定为 `0.12.0`，与 OpenMAIC DSL 版本对齐。
+- `course_stages.dsl_version` 固定为 `0.13.0`；历史版本保留自己的版本号，读取逻辑不按版本裁剪字段。
 - 生成记录保存 `outline_id`、`provider_id`、`model_name` 与场景数量。
 - 任务与课堂查询都按当前用户隔离，其他用户访问返回 404。
 
@@ -71,7 +79,7 @@
 
 ```text
 CLASSROOM_MATERIAL_CHAR_LIMIT=12000
-CLASSROOM_GENERATION_TIMEOUT_SECONDS=600
+CLASSROOM_GENERATION_TIMEOUT_SECONDS=900
 ```
 
 ## 真实模型诊断
@@ -86,4 +94,4 @@ Qwen Omni 只支持文本输出，课堂调用会自动附加 `modalities: ["tex
 
 脚本读取 `DASHSCOPE_API_KEY`，只输出场景统计，不打印密钥或完整模型响应。
 
-阶段 4B 负责前端课堂渲染器，阶段 4C 负责互动与课堂动作。
+阶段 4B 负责前端课堂渲染器，阶段 4C-1 已补齐互动与项目式场景渲染；作答提交与事件流播放属于 4C 剩余部分。
