@@ -4,9 +4,11 @@ import time
 from uuid import uuid4
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.config import Settings
+from app.core.errors import error_body
 
 logger = logging.getLogger(__name__)
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{8,128}$")
@@ -59,3 +61,28 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             get_client_ip(request, self.settings),
         )
         return response
+class ServerErrorShieldMiddleware(BaseHTTPMiddleware):
+    """Return a JSON 500 from inside the CORS layer.
+
+    Starlette's server-error middleware sits above the CORS middleware, so an
+    unhandled exception would otherwise reach the browser as a response without
+    ``Access-Control-Allow-Origin`` and be reported as a network failure.
+    """
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        try:
+            return await call_next(request)
+        except Exception:
+            request_id = getattr(request.state, "request_id", "unknown")
+            logger.exception(
+                "unhandled_request_error request_id=%s method=%s path=%s",
+                request_id,
+                request.method,
+                request.url.path,
+            )
+            return JSONResponse(
+                status_code=500,
+                content=error_body("INTERNAL_ERROR", "An unexpected error occurred"),
+            )

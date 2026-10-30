@@ -13,8 +13,10 @@
 | GET | `/api/v1/courses/{course_id}/classroom/responses` | 获取当前课堂版本已保存的作答 |
 | POST | `/api/v1/courses/{course_id}/classroom/narration` | 为最新课堂的全部场景生成旁白音频任务 |
 | POST | `/api/v1/courses/{course_id}/classroom/scenes/{scene_id}/narration` | 重新生成单个场景的旁白 |
-| GET | `/api/v1/media/{media_id}` | 查看旁白音频元数据 |
-| GET | `/api/v1/media/{media_id}/content` | 鉴权下载音频，支持 HTTP Range |
+| POST | `/api/v1/courses/{course_id}/classroom/illustrations` | 为尚未配图的幻灯片补图，整堂最多 6 张 |
+| POST | `/api/v1/courses/{course_id}/classroom/scenes/{scene_id}/illustration` | 生成或重生成单页配图 |
+| GET | `/api/v1/media/{media_id}` | 查看音频或图片元数据 |
+| GET | `/api/v1/media/{media_id}/content` | 鉴权下载媒体文件 |
 
 生成请求示例：
 
@@ -108,6 +110,47 @@ DSL `0.13.0` 支持四类场景，其中幻灯片与测验是主体，互动与�
 
 Qwen 的 TTS Base URL 指向 DashScope 官方根地址时使用原生 `multimodal-generation` 接口；阿里云 MaaS 工作区的 `/compatible-mode/v1` 会自动派生为同主机 `/api/v1`，同样走原生接口；其他兼容网关使用 OpenAI 兼容的 `/audio/speech`。两者都按 Provider 已保存的 API Key 鉴权。
 
+## 课堂配图
+
+配图只处理最新课堂版本中的 `slide` 场景。两个图片接口都立即返回 `202` 与 `kind=image` 任务，客户端继续轮询同一个 `/api/v1/generation/jobs/{job_id}`。整堂接口按场景顺序跳过已有配图的幻灯片，只填充剩余额度（上限 `IMAGE_MAX_PER_CLASSROOM`，默认 6 张）；额度用尽返回 `IMAGE_LIMIT_REACHED`，所有幻灯片都已配图返回 `IMAGE_NO_SCENES`。单页接口只处理指定场景，非 `slide` 场景返回 `IMAGE_SCENE_NOT_FOUND`；新增配图同样受整堂上限约束。
+
+```json
+{
+  "provider_id": "qwen",
+  "instructions": "保持人物与场景写实，左侧留出文字安全区。",
+  "regenerate": false
+}
+```
+
+默认主通道是 Qwen `qwen-image-3.0`。请求失败、没有可用 Key 或输出无法解码时，按 `IMAGE_FALLBACK_CHAIN` 依次降级；默认链只有无 Key 的 Pollinations `flux`，配置凭据后可追加 `huggingface` 与 `cloudflare`。降级只影响本次任务，不改变用户的 Provider 默认设置，日志以 `image_provider_failed` 记录每次失败。
+
+图片会立即下载并经过以下处理：
+
+- 拒绝私网、保留地址、带账号密码或片段的下载 URL，关闭重定向。
+- 限制下载体积，使用 Pillow 完整解码，不能只相信供应商的 `Content-Type`。
+- 移除 EXIF 和其他元数据，等比缩放到最大 1600×900，转为 WebP（默认质量 82）。
+- 保存到 `ASSET_STORAGE_ROOT/{owner_id}/media/{media_id}/illustration.webp`，元数据写入 `media_assets`。
+- 供应商临时 URL 不落库，浏览器只通过鉴权 `/api/v1/media/{id}/content` 读取。
+
+成功后 `content.illustration` 写回场景：
+
+```json
+{
+  "mediaId": "媒体资产 UUID",
+  "format": "webp",
+  "mimeType": "image/webp",
+  "width": 1600,
+  "height": 900,
+  "providerId": "qwen",
+  "model": "qwen-image-3.0",
+  "sha256": "...",
+  "updatedAt": "2026-10-30T12:00:00+00:00",
+  "alt": "场景标题"
+}
+```
+
+缓存键由 `provider + model + prompt + 目标尺寸 + webp` 计算。相同内容重复请求会复用已落盘图片；传 `regenerate: true` 会覆盖原资产并保持同一个 `mediaId`。每页最多 1 张，由 `media_assets` 唯一约束兜底。
+
 ## 作答与判分
 
 作答与项目任务记录在 `classroom_responses`，按 `owner_id + scene_id + target_id` 唯一，重复提交会覆盖而不是追加。判分规则：
@@ -136,6 +179,18 @@ TTS_PROVIDER_ID=qwen
 TTS_GENERATION_TIMEOUT_SECONDS=120
 TTS_MAX_TEXT_CHARS=6000
 TTS_MAX_AUDIO_BYTES=20971520
+IMAGE_PROVIDER_ID=qwen
+IMAGE_MODEL=qwen-image-3.0
+IMAGE_GENERATION_TIMEOUT_SECONDS=180
+IMAGE_MAX_DOWNLOAD_BYTES=26214400
+IMAGE_MAX_WIDTH=1600
+IMAGE_MAX_HEIGHT=900
+IMAGE_WEBP_QUALITY=82
+IMAGE_MAX_PER_CLASSROOM=6
+IMAGE_TARGET_WIDTH=1024
+IMAGE_TARGET_HEIGHT=576
+IMAGE_POLLINATIONS_BASE_URL=https://image.pollinations.ai/prompt
+IMAGE_POLLINATIONS_MODEL=flux
 ```
 
 ## 真实模型诊断
@@ -150,4 +205,4 @@ Qwen Omni 只支持文本输出，课堂调用会自动附加 `modalities: ["tex
 
 脚本读取 `DASHSCOPE_API_KEY`，只输出场景统计，不打印密钥或完整模型响应。
 
-阶段 4B 负责前端课堂渲染器，4C 补齐互动、项目式、作答提交与事件流播放；阶段 6A 增加旁白合成、音频资产与播放器音频优先播放。
+阶段 4B 负责前端课堂渲染器，4C 补齐互动、项目式、作答提交与事件流播放；阶段 6A 增加旁白合成、音频资产与播放器音频优先播放；阶段 6B 增加课堂配图、Qwen Image 主通道与 Pollinations 兜底。

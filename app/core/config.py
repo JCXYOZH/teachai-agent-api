@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_JWT_SECRET = "development-only-secret-change-before-production-5f2a9c"
 
+IMAGE_PROVIDER_IDS = {"qwen", "pollinations", "huggingface", "cloudflare"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -57,6 +59,25 @@ class Settings(BaseSettings):
     tts_generation_timeout_seconds: float = 120.0
     tts_max_text_chars: int = 6000
     tts_max_audio_bytes: int = 20 * 1024 * 1024
+    image_provider_id: str = "qwen"
+    image_model: str = "qwen-image-3.0"
+    image_generation_timeout_seconds: float = 180.0
+    image_max_download_bytes: int = 25 * 1024 * 1024
+    image_max_width: int = 1600
+    image_max_height: int = 900
+    image_webp_quality: int = 82
+    image_max_per_classroom: int = 6
+    image_target_width: int = 1024
+    image_target_height: int = 576
+    image_pollinations_base_url: str = "https://image.pollinations.ai/prompt"
+    image_pollinations_model: str = "flux"
+    image_fallback_chain: str = "pollinations"
+    image_hf_endpoint: str = "https://api-inference.huggingface.co/models"
+    image_hf_model: str = "black-forest-labs/FLUX.1-schnell"
+    image_hf_token: str = ""
+    image_cloudflare_account_id: str = ""
+    image_cloudflare_api_token: str = ""
+    image_cloudflare_model: str = "@cf/black-forest-labs/flux-1-schnell"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     deepseek_api_key: str = ""
@@ -168,6 +189,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "TTS_MAX_AUDIO_BYTES must be between 1048576 and 209715200"
             )
+        if self.image_provider_id not in IMAGE_PROVIDER_IDS:
+            raise ValueError(
+                "IMAGE_PROVIDER_ID must be qwen, pollinations, huggingface or cloudflare"
+            )
+        for candidate in self.image_fallback_chain.split(","):
+            normalized = candidate.strip().lower()
+            if normalized and normalized not in IMAGE_PROVIDER_IDS:
+                raise ValueError(
+                    "IMAGE_FALLBACK_CHAIN must contain qwen, pollinations, "
+                    "huggingface or cloudflare entries"
+                )
         return self
 
     @property

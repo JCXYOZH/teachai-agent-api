@@ -15,12 +15,14 @@ from app.schemas.classroom import (
     ClassroomSubmitView,
     ClassroomView,
     GenerationJobView,
+    IllustrationGenerateRequest,
     NarrationGenerateRequest,
 )
 from app.services import generation_jobs
 from app.services.classroom_responses import ClassroomResponseService
 from app.services.classrooms import ClassroomService
 from app.services.generation_runner import run_generation_job
+from app.services.images import IllustrationService
 from app.services.narrations import NarrationService
 
 router = APIRouter(prefix="/courses", tags=["classroom"])
@@ -41,6 +43,12 @@ def get_narration_service(
     db: AsyncSession = Depends(get_db),
 ) -> NarrationService:
     return NarrationService(db, settings)
+
+
+def get_illustration_service(
+    db: AsyncSession = Depends(get_db),
+) -> IllustrationService:
+    return IllustrationService(db, settings)
 
 
 @router.post(
@@ -115,6 +123,54 @@ async def generate_scene_narration(
     )
     background_tasks.add_task(
         run_generation_job, job.id, generation_jobs.JOB_KIND_NARRATION
+    )
+    return job
+
+
+@router.post(
+    "/{course_id}/classroom/illustrations",
+    response_model=GenerationJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_classroom_illustrations(
+    course_id: UUID,
+    background_tasks: BackgroundTasks,
+    payload: Optional[IllustrationGenerateRequest] = None,
+    current_user: User = Depends(get_current_user),
+    service: IllustrationService = Depends(get_illustration_service),
+) -> GenerationJobView:
+    job = await service.create_job(
+        current_user,
+        course_id,
+        payload or IllustrationGenerateRequest(),
+    )
+    background_tasks.add_task(
+        run_generation_job, job.id, generation_jobs.JOB_KIND_IMAGE
+    )
+    return job
+
+
+@router.post(
+    "/{course_id}/classroom/scenes/{scene_id}/illustration",
+    response_model=GenerationJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_scene_illustration(
+    course_id: UUID,
+    scene_id: UUID,
+    background_tasks: BackgroundTasks,
+    payload: Optional[IllustrationGenerateRequest] = None,
+    current_user: User = Depends(get_current_user),
+    service: IllustrationService = Depends(get_illustration_service),
+) -> GenerationJobView:
+    job = await service.create_job(
+        current_user,
+        course_id,
+        payload or IllustrationGenerateRequest(),
+        scene_id=scene_id,
+    )
+    background_tasks.add_task(
+        run_generation_job, job.id, generation_jobs.JOB_KIND_IMAGE
     )
     return job
 

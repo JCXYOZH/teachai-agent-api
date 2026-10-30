@@ -129,7 +129,7 @@ class GenerationJob(Base):
             name='generation_job_status',
         ),
         CheckConstraint(
-            "kind IN ('outline', 'classroom', 'narration')",
+            "kind IN ('outline', 'classroom', 'narration', 'image')",
             name='generation_job_kind',
         ),
         CheckConstraint('progress >= 0 AND progress <= 100', name='generation_job_progress'),

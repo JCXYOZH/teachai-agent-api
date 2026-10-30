@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 JOB_KIND_OUTLINE = "outline"
 JOB_KIND_CLASSROOM = "classroom"
 JOB_KIND_NARRATION = "narration"
+JOB_KIND_IMAGE = "image"
 ACTIVE_STATUSES = ("queued", "running")
 
 

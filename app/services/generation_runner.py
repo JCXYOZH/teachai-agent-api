@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.services import generation_jobs
 from app.services.classrooms import ClassroomService
+from app.services.images import IllustrationService
 from app.services.narrations import NarrationService
 from app.services.outlines import OutlineService
 
@@ -20,6 +21,8 @@ async def run_generation_job(job_id: UUID, kind: str) -> None:
                 await ClassroomService(db, settings).run_job(job_id)
             elif kind == generation_jobs.JOB_KIND_NARRATION:
                 await NarrationService(db, settings).run_job(job_id)
+            elif kind == generation_jobs.JOB_KIND_IMAGE:
+                await IllustrationService(db, settings).run_job(job_id)
             else:
                 logger.error(
                     "generation_job_unknown_kind job_id=%s kind=%s", job_id, kind

@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册；阶段 6A 已加入按场景的旁白合成、音频资产与鉴权播放。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册；阶段 6A 已加入按场景的旁白合成、音频资产与鉴权播放；阶段 6B 已加入课堂配图、Qwen Image 主通道与 Pollinations 无 Key 兜底。
 
 ## 技术栈
 
@@ -70,6 +70,8 @@ Copy-Item .env.example .env
 | POST | `/api/v1/courses/{id}/outline/generate` | 创建大纲生成任务，返回排队中的任务 |
 | POST | `/api/v1/courses/{id}/classroom/generate` | 创建课堂生成任务，返回排队中的任务 |
 | GET | `/api/v1/courses/{id}/classroom` | 获取最新课堂版本与场景 |
+| POST | `/api/v1/courses/{id}/classroom/illustrations` | 为前 6 个幻灯片场景生成配图 |
+| POST | `/api/v1/courses/{id}/classroom/scenes/{scene_id}/illustration` | 生成或重生成单页配图 |
 | GET | `/api/v1/generation/jobs/{id}` | 查询大纲或课堂生成任务的状态与进度 |
 
 错误统一返回：
@@ -86,12 +88,15 @@ Copy-Item .env.example .env
 - Qwen 优先读取 `QWEN_API_KEY`，为空时回退到 `DASHSCOPE_API_KEY`。可用 `scripts/check_qwen.py` 验证 `qwen3.8-omni-flash`。
 - 旁白可用 `scripts/check_tts.py` 验证；阿里云 MaaS 工作区应传入 `--base-url https://<workspace-host>/api/v1`。
 - 无 Key 场景可设置 `TTS_PROVIDER_ID=edge-tts`，用 `scripts/check_edge_tts.py` 验证微软中文音色。
+- 配图默认使用 Qwen `qwen-image-3.0`，失败时按 `IMAGE_FALLBACK_CHAIN` 降级；默认只有无需 Key 的 Pollinations `flux`，可选 `huggingface`、`cloudflare`。
+- 配图可用 `scripts/check_image.py --provider all` 真实探测每个通道，脚本不打印任何 Key。
 
 ## 课堂生成
 
-- 课堂 DSL 版本固定为 `0.12.0`，幻灯片画布为 1280×720 深色主题。
+- 课堂 DSL 版本固定为 `0.13.0`，幻灯片画布为 1280×720 深色主题。
 - 每次生成创建新的课堂版本，场景与旁白动作一起保存。
 - 生成失败会把任务标记为 `failed` 并记录错误码，重试后仍失败返回 `CLASSROOM_INVALID_RESPONSE`。
+- 配图每页最多 1 张、整堂最多 6 张；整堂只补齐尚未配图的幻灯片；供应商返回的临时图片 URL 只用于即时下载，不写入数据库。
 - 生成流程、场景格式与真实模型诊断见 `docs/classroom.md`。
 
 ## 认证设计
@@ -139,5 +144,5 @@ docker compose up -d
 
 ## 后续阶段
 
-1. 课堂作答提交、事件流播放与学习进度统计（4C 剩余）。
-2. 图片生成、导出与生产部署（6B-6D）。
+1. 导出与生产部署（6C-6D）。
+2. 共享任务队列、图片质量评估与可选的正式图片服务商。

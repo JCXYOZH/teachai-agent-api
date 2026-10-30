@@ -114,3 +114,53 @@ $env:DASHSCOPE_API_KEY="sk-..."
 ```
 
 脚本只输出格式、字节数、时长和错误信息，不打印 API Key。
+
+## 课堂配图
+
+配图复用 Qwen Provider 已保存的 API Key 与 Base URL，默认模型为 `qwen-image-3.0`。如果 Base URL 是 MaaS 的 `/compatible-mode/v1`，后端会派生同主机的 `/api/v1/services/aigc/multimodal-generation/generation` 原生图片接口。
+
+Qwen 请求失败、超时、没有可用 Key 或返回内容无法解码时，任务按 `IMAGE_FALLBACK_CHAIN` 的顺序继续尝试。默认链只有 Pollinations `flux`：不需要 Key，适合开发与兜底，但没有官方 SLA；生产环境应监控 `image_provider_failed` 日志并确认服务条款。
+
+可选兜底通道，未配置凭据时会被跳过并返回 `IMAGE_PROVIDER_NOT_CONFIGURED`：
+
+| 通道 | 免费额度 | 所需凭据 | 说明 |
+| --- | --- | --- | --- |
+| `pollinations` | 公开服务，无需 Key | 无 | 默认兜底，`flux` 可用；并发与稳定性无保证 |
+| `huggingface` | 免费账号额度 | `IMAGE_HF_TOKEN` | 走 Inference API，`IMAGE_HF_MODEL` 可换模型；额度耗尽返回 429/503 |
+| `cloudflare` | Workers AI 免费神经元额度 | `IMAGE_CLOUDFLARE_ACCOUNT_ID` + `IMAGE_CLOUDFLARE_API_TOKEN` | 默认 `@cf/black-forest-labs/flux-1-schnell`，输出比例由模型决定 |
+| `qwen` | 取决于账号 | Qwen Provider 配置 | 主通道，可要求 16:9 横版 |
+
+示例：`IMAGE_FALLBACK_CHAIN=pollinations,cloudflare,huggingface`。链中没有可用通道时任务以 `IMAGE_PROVIDER_ERROR` 失败，错误信息列出每个通道的错误码。
+
+所有图片都会先下载到内存、限制大小、用 Pillow 解码校验、移除 EXIF、转为 WebP，再写入 `ASSET_STORAGE_ROOT`。临时供应商 URL 不会写入数据库，也不会直接暴露给浏览器。整堂配图只填充尚未配图的幻灯片，达到 `IMAGE_MAX_PER_CLASSROOM` 后返回 `422 IMAGE_LIMIT_REACHED`。
+
+相关配置：
+
+```text
+IMAGE_PROVIDER_ID=qwen
+IMAGE_MODEL=qwen-image-3.0
+IMAGE_GENERATION_TIMEOUT_SECONDS=180
+IMAGE_MAX_DOWNLOAD_BYTES=26214400
+IMAGE_MAX_WIDTH=1600
+IMAGE_MAX_HEIGHT=900
+IMAGE_WEBP_QUALITY=82
+IMAGE_MAX_PER_CLASSROOM=6
+IMAGE_TARGET_WIDTH=1024
+IMAGE_TARGET_HEIGHT=576
+IMAGE_POLLINATIONS_BASE_URL=https://image.pollinations.ai/prompt
+IMAGE_POLLINATIONS_MODEL=flux
+IMAGE_FALLBACK_CHAIN=pollinations
+IMAGE_HF_ENDPOINT=https://api-inference.huggingface.co/models
+IMAGE_HF_MODEL=black-forest-labs/FLUX.1-schnell
+IMAGE_HF_TOKEN=
+IMAGE_CLOUDFLARE_ACCOUNT_ID=
+IMAGE_CLOUDFLARE_API_TOKEN=
+IMAGE_CLOUDFLARE_MODEL=@cf/black-forest-labs/flux-1-schnell
+```
+
+真实探测（脚本只输出 provider、尺寸、字节数与错误码，不打印任何 Key）：
+
+```powershell
+$env:DASHSCOPE_API_KEY="sk-..."
+.\.venv\Scripts\python.exe scripts\check_image.py --provider all --out-dir .\image-smoke
+```
