@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import auth, classroom, health, library, outlines, providers
+from app.api.routes import auth, classroom, health, library, media, outlines, providers
 from app.core.config import settings
 from app.core.docs import swagger_ui_html
 from app.core.errors import install_error_handlers
@@ -95,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(outlines.router, prefix=settings.api_v1_prefix)
     app.include_router(classroom.router, prefix=settings.api_v1_prefix)
     app.include_router(classroom.generation_router, prefix=settings.api_v1_prefix)
+    app.include_router(media.router, prefix=settings.api_v1_prefix)
     app.include_router(library.assets_router, prefix=settings.api_v1_prefix)
     app.include_router(library.search_router, prefix=settings.api_v1_prefix)
     return app

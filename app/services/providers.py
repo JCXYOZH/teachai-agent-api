@@ -1,6 +1,7 @@
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
@@ -19,7 +20,12 @@ from app.schemas.provider import (
     ProviderTestResponse,
     ProviderView,
 )
-from app.services.provider_registry import PROVIDER_SPECS, ProviderSpec, get_provider_spec
+from app.services.provider_registry import (
+    EDGE_TTS_SPEC,
+    PROVIDER_SPECS,
+    ProviderSpec,
+    get_provider_spec,
+)
 from app.services.url_guard import validate_provider_base_url
 
 
@@ -39,6 +45,9 @@ class ResolvedProvider:
     api_key_source: Optional[str]
     base_url: str
     default_model: str
+    tts_base_url: Optional[str] = None
+    tts_model: Optional[str] = None
+    tts_voice: Optional[str] = None
 
 
 def _secret_hint(secret: Optional[str]) -> Optional[str]:
@@ -49,6 +58,15 @@ def _secret_hint(secret: Optional[str]) -> Optional[str]:
 
 def _secret_last4(secret: str) -> Optional[str]:
     return secret[-4:] if len(secret) >= 8 else None
+
+
+def _qwen_tts_base_url(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    path = (parsed.path or '').rstrip('/')
+    suffix = '/compatible-mode/v1'
+    if path.endswith(suffix):
+        path = path[: -len(suffix)] + '/api/v1'
+    return urlunsplit((parsed.scheme, parsed.netloc, path, '', ''))
 
 
 def _response_error(response: httpx.Response) -> str:
@@ -229,6 +247,23 @@ class ProviderConfigService:
         elif config.default_model is None:
             config.default_model = self._default_model(spec)
 
+        if payload.clear_tts:
+            config.tts_base_url = None
+            config.tts_model = None
+            config.tts_voice = None
+        else:
+            if "tts_base_url" in payload.model_fields_set:
+                if payload.tts_base_url:
+                    config.tts_base_url = await validate_provider_base_url(
+                        payload.tts_base_url, spec, self.settings
+                    )
+                else:
+                    config.tts_base_url = None
+            if "tts_model" in payload.model_fields_set:
+                config.tts_model = payload.tts_model or None
+            if "tts_voice" in payload.model_fields_set:
+                config.tts_voice = payload.tts_voice or None
+
         if payload.is_default is True:
             await self.db.execute(
                 update(ProviderConfig)
@@ -373,6 +408,57 @@ class ProviderConfigService:
             )
         return resolved
 
+    async def resolve_tts_provider(
+        self,
+        owner: User,
+        provider_id: Optional[str] = None,
+        model: Optional[str] = None,
+        voice: Optional[str] = None,
+    ) -> ResolvedProvider:
+        selected_id = provider_id or self.settings.tts_provider_id
+        if selected_id == EDGE_TTS_SPEC.id:
+            selected_voice = voice or EDGE_TTS_SPEC.tts_default_voice
+            if selected_voice not in EDGE_TTS_SPEC.tts_voices:
+                raise AppError(
+                    422,
+                    "TTS_VOICE_NOT_SUPPORTED",
+                    f"{selected_voice} is not a supported Edge TTS voice",
+                )
+            return ResolvedProvider(
+                spec=EDGE_TTS_SPEC,
+                config=None,
+                api_key=None,
+                api_key_source=None,
+                base_url="",
+                default_model=EDGE_TTS_SPEC.tts_default_model or "edge-tts",
+                tts_base_url=None,
+                tts_model=EDGE_TTS_SPEC.tts_default_model,
+                tts_voice=selected_voice,
+            )
+        spec = self._spec(selected_id)
+        if not spec.supports_tts:
+            raise AppError(
+                422,
+                "TTS_NOT_SUPPORTED",
+                f"{spec.label} does not provide speech synthesis",
+            )
+        config = await self._get_config(owner.id, selected_id)
+        resolved = self._resolve(spec, config)
+        resolved.tts_base_url = await validate_provider_base_url(
+            resolved.tts_base_url or resolved.base_url, spec, self.settings
+        )
+        if model:
+            resolved.tts_model = model
+        if voice:
+            resolved.tts_voice = voice
+        if spec.requires_api_key and not resolved.api_key:
+            raise AppError(
+                422,
+                "PROVIDER_API_KEY_REQUIRED",
+                "This provider requires an API key",
+            )
+        return resolved
+
     async def _configs_by_provider(self, owner_id: UUID) -> Dict[str, ProviderConfig]:
         result = await self.db.execute(
             select(ProviderConfig).where(ProviderConfig.owner_id == owner_id)
@@ -411,6 +497,15 @@ class ProviderConfigService:
             default_model=resolved.default_model,
             is_default=bool(config and config.is_default),
             updated_at=config.updated_at if config else None,
+            supports_tts=spec.supports_tts,
+            tts_models=[spec.tts_default_model] if spec.tts_default_model else [],
+            tts_voices=list(spec.tts_voices),
+            tts_base_url=config.tts_base_url if config else None,
+            tts_model=config.tts_model if config else None,
+            tts_voice=config.tts_voice if config else None,
+            tts_effective_base_url=resolved.tts_base_url if spec.supports_tts else None,
+            tts_effective_model=resolved.tts_model,
+            tts_effective_voice=resolved.tts_voice,
         )
 
     def _resolve(
@@ -440,6 +535,34 @@ class ProviderConfigService:
             or self._environment_value(spec.env_model_setting)
             or spec.default_models[0]
         )
+        tts_base_url: Optional[str] = None
+        tts_model: Optional[str] = None
+        tts_voice: Optional[str] = None
+        if spec.supports_tts:
+            configured_base = config.base_url if config is not None else None
+            base_is_default = (configured_base or spec.default_base_url).rstrip(
+                "/"
+            ) == spec.default_base_url.rstrip("/")
+            tts_base_url = (
+                (config.tts_base_url if config is not None else None)
+                or (
+                    spec.tts_default_base_url
+                    if spec.tts_default_base_url and base_is_default
+                    else (
+                        _qwen_tts_base_url(base_url)
+                        if spec.id == 'qwen'
+                        else base_url
+                    )
+                )
+            )
+            tts_model = (
+                (config.tts_model if config is not None else None)
+                or spec.tts_default_model
+            )
+            tts_voice = (
+                (config.tts_voice if config is not None else None)
+                or spec.tts_default_voice
+            )
         return ResolvedProvider(
             spec=spec,
             config=config,
@@ -447,6 +570,9 @@ class ProviderConfigService:
             api_key_source=api_key_source,
             base_url=base_url,
             default_model=default_model,
+            tts_base_url=tts_base_url,
+            tts_model=tts_model,
+            tts_voice=tts_voice,
         )
 
     def _environment_value(self, setting_name: Optional[str]) -> Optional[str]:

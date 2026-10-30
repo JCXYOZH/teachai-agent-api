@@ -46,7 +46,7 @@ async def clean_database(migrate_database) -> None:
     async with engine.begin() as connection:
         await connection.execute(
             text(
-                'TRUNCATE TABLE generation_jobs, course_scenes, course_stages, '
+                'TRUNCATE TABLE media_assets, generation_jobs, course_scenes, course_stages, '
                 'course_outlines, asset_extractions, assets, courses, folders, '
                 'provider_configs, auth_sessions, email_verifications, users '
                 'RESTART IDENTITY CASCADE'

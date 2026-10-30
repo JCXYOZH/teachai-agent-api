@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 JOB_KIND_OUTLINE = "outline"
 JOB_KIND_CLASSROOM = "classroom"
+JOB_KIND_NARRATION = "narration"
 ACTIVE_STATUSES = ("queued", "running")
 
 
@@ -65,6 +66,7 @@ async def create_job(
     course_id: UUID,
     kind: str,
     outline_id: Optional[UUID] = None,
+    stage_id: Optional[UUID] = None,
     provider_id: Optional[str] = None,
     model_name: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
@@ -93,6 +95,7 @@ async def create_job(
         owner_id=owner_id,
         course_id=course_id,
         outline_id=outline_id,
+        stage_id=stage_id,
         kind=kind,
         payload=payload or {},
         provider_id=provider_id,

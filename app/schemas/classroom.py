@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SceneType = Literal["slide", "quiz", "interactive", "pbl"]
 JobStatus = Literal["queued", "running", "completed", "failed"]
-JobKind = Literal["outline", "classroom"]
+JobKind = Literal["outline", "classroom", "narration"]
 ResponseKind = Literal["question", "microtask"]
 
 
@@ -25,6 +25,24 @@ class ClassroomGenerateRequest(BaseModel):
         normalized = value.strip()
         if any(ord(character) < 32 and character not in "\n\t" for character in normalized):
             raise ValueError("Instructions contain unsupported control characters")
+        return normalized or None
+
+
+class NarrationGenerateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    provider_id: Optional[str] = Field(default=None, max_length=50)
+    model: Optional[str] = Field(default=None, max_length=200)
+    voice: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("model", "voice", "provider_id")
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if any(ord(character) < 32 for character in normalized):
+            raise ValueError("Text contains unsupported control characters")
         return normalized or None
 
 

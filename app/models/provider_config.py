@@ -38,6 +38,9 @@ class ProviderConfig(Base):
     api_key_last4: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     default_model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    tts_base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    tts_model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    tts_voice: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )

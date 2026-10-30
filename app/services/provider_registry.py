@@ -18,6 +18,11 @@ class ProviderSpec:
     env_key_aliases: Tuple[str, ...] = ()
     env_base_url_setting: Optional[str] = None
     env_model_setting: Optional[str] = None
+    supports_tts: bool = False
+    tts_default_model: Optional[str] = None
+    tts_default_voice: Optional[str] = None
+    tts_default_base_url: Optional[str] = None
+    tts_voices: Tuple[str, ...] = ()
 
 
 PROVIDER_SPECS: Dict[str, ProviderSpec] = {
@@ -32,6 +37,10 @@ PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         supports_model_discovery=True,
         default_models=("gpt-4o-mini", "gpt-4o"),
         env_key_setting="openai_api_key",
+        supports_tts=True,
+        tts_default_model="gpt-4o-mini-tts",
+        tts_default_voice="coral",
+        tts_voices=("alloy", "ash", "coral", "sage", "verse"),
     ),
     "anthropic": ProviderSpec(
         id="anthropic",
@@ -69,6 +78,19 @@ PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         default_models=("qwen-plus", "qwen-max", "qwen-turbo", "qwen3.8-omni-flash"),
         env_key_setting="qwen_api_key",
         env_key_aliases=("dashscope_api_key",),
+        supports_tts=True,
+        tts_default_model="qwen3-tts-flash",
+        tts_default_voice="Cherry",
+        tts_default_base_url="https://dashscope.aliyuncs.com",
+        tts_voices=(
+            "Cherry",
+            "Serena",
+            "Ethan",
+            "Chelsie",
+            "Dylan",
+            "Jada",
+            "Sunny",
+        ),
     ),
     "kimi": ProviderSpec(
         id="kimi",
@@ -93,6 +115,10 @@ PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         supports_model_discovery=True,
         default_models=("glm-4-flash", "glm-4-plus"),
         env_key_setting="glm_api_key",
+        supports_tts=True,
+        tts_default_model="glm-tts",
+        tts_default_voice="tongtong",
+        tts_voices=("tongtong", "chuichui", "xiaochen", "jam", "kazi", "douji"),
     ),
     "llama-local": ProviderSpec(
         id="llama-local",
@@ -110,6 +136,33 @@ PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         env_model_setting="llama_model",
     ),
 }
+
+
+EDGE_TTS_SPEC = ProviderSpec(
+    id="edge-tts",
+    label="Microsoft Edge TTS",
+    description="Keyless Microsoft Edge online speech synthesis.",
+    protocol="edge-tts",
+    default_base_url="",
+    alternate_base_urls=(),
+    requires_api_key=False,
+    supports_model_discovery=False,
+    default_models=(),
+    env_key_setting="",
+    supports_tts=True,
+    tts_default_model="edge-tts",
+    tts_default_voice="zh-CN-XiaoxiaoNeural",
+    tts_voices=(
+        "zh-CN-XiaoxiaoNeural",
+        "zh-CN-XiaoyiNeural",
+        "zh-CN-YunjianNeural",
+        "zh-CN-YunxiNeural",
+        "zh-CN-YunxiaNeural",
+        "zh-CN-YunyangNeural",
+        "zh-CN-liaoning-XiaobeiNeural",
+        "zh-CN-shaanxi-XiaoniNeural",
+    ),
+)
 
 
 def get_provider_spec(provider_id: str) -> Optional[ProviderSpec]:

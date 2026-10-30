@@ -19,9 +19,38 @@
   "api_key": "sk-...",
   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "default_model": "qwen-plus",
-  "is_default": true
+  "is_default": true,
+  "tts_base_url": null,
+  "tts_model": "qwen3-tts-flash",
+  "tts_voice": "Cherry"
 }
 ```
+
+## 旁白（TTS）配置
+
+`ProviderView` 在原有字段之外返回：
+
+- `supports_tts`：是否支持语音合成。当前 OpenAI、Qwen 与 GLM 为 `true`。
+- `tts_models` / `tts_voices`：建议模型与音色列表。
+- `tts_base_url` / `tts_model` / `tts_voice`：当前用户保存的覆盖值，未保存时为 `null`。
+- `tts_effective_base_url` / `tts_effective_model` / `tts_effective_voice`：最终生效值（含内置默认值）。
+
+默认组合：Qwen `qwen3-tts-flash` + `Cherry`，OpenAI `gpt-4o-mini-tts` + `coral`，GLM `glm-tts` + `tongtong`。更新配置时传 `clear_tts: true` 可清空三项覆盖值；`clear_tts` 不能与三个 TTS 字段同时提交。
+
+Qwen 的 TTS Base URL 留空时：Provider Base URL 仍是官方默认地址则使用 DashScope 原生接口；如果 Provider Base URL 是阿里云 MaaS 工作区的 `/compatible-mode/v1`，会自动派生同主机的 `/api/v1` 并调用原生语音接口；其他自建兼容网关仍使用 `/audio/speech`。也可以显式填写 `tts_base_url`。生产环境所有非回环地址必须使用 HTTPS。
+
+### Edge TTS 无 Key 后备
+
+设置 `TTS_PROVIDER_ID=edge-tts`，或在旁白请求中传 `"provider_id": "edge-tts"`，即可使用微软 Edge 在线语音，默认音色为 `zh-CN-XiaoxiaoNeural`。该方式不需要 API Key，也不会出现在普通 LLM Provider 列表中；Qwen 仍是默认 TTS。
+
+```json
+{
+  "provider_id": "edge-tts",
+  "voice": "zh-CN-XiaoxiaoNeural"
+}
+```
+
+可用中文音色包括 `zh-CN-XiaoxiaoNeural`、`zh-CN-XiaoyiNeural`、`zh-CN-YunjianNeural`、`zh-CN-YunxiNeural`、`zh-CN-YunxiaNeural`、`zh-CN-YunyangNeural` 及两个方言音色。该客户端依赖微软在线服务，服务器必须能访问 `speech.platform.bing.com`；它没有官方 SLA，商业部署前应确认服务条款，关键业务建议保留 Qwen 或其他正式 TTS 作为主通道。
 
 自定义 Qwen 兼容网关只需替换 `base_url` 和 `default_model`。例如阿里云 MaaS 地址
 `https://<workspace-host>/compatible-mode/v1` 可直接保存，前提是域名解析到公网地址。
@@ -73,3 +102,15 @@ Qwen 会优先读取 `QWEN_API_KEY`，为空时回退到 `DASHSCOPE_API_KEY`。�
   --base-url https://<workspace-host>/compatible-mode/v1 `
   --model qwen3.8-omni-flash
 ```
+
+验证 `qwen3-tts-flash` 的真实语音合成：
+
+```powershell
+$env:DASHSCOPE_API_KEY="sk-..."
+.\.venv\Scripts\python.exe scripts\check_tts.py `
+  --base-url https://<workspace-host>/api/v1 `
+  --model qwen3-tts-flash `
+  --voice Cherry
+```
+
+脚本只输出格式、字节数、时长和错误信息，不打印 API Key。

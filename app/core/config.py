@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     outline_generation_timeout_seconds: float = 600.0
     classroom_material_char_limit: int = 12_000
     classroom_generation_timeout_seconds: float = 600.0
+    tts_provider_id: str = "qwen"
+    tts_generation_timeout_seconds: float = 120.0
+    tts_max_text_chars: int = 6000
+    tts_max_audio_bytes: int = 20 * 1024 * 1024
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     deepseek_api_key: str = ""
@@ -145,6 +149,24 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "CLASSROOM_GENERATION_TIMEOUT_SECONDS must be between 60 and 1800"
+            )
+        if not self.tts_provider_id.strip():
+            raise ValueError("TTS_PROVIDER_ID must not be empty")
+        if (
+            self.tts_generation_timeout_seconds < 10
+            or self.tts_generation_timeout_seconds > 600
+        ):
+            raise ValueError(
+                "TTS_GENERATION_TIMEOUT_SECONDS must be between 10 and 600"
+            )
+        if self.tts_max_text_chars < 100 or self.tts_max_text_chars > 20_000:
+            raise ValueError("TTS_MAX_TEXT_CHARS must be between 100 and 20000")
+        if (
+            self.tts_max_audio_bytes < 1024 * 1024
+            or self.tts_max_audio_bytes > 200 * 1024 * 1024
+        ):
+            raise ValueError(
+                "TTS_MAX_AUDIO_BYTES must be between 1048576 and 209715200"
             )
         return self
 

@@ -11,6 +11,10 @@
 | GET | `/api/v1/generation/jobs/{job_id}` | 查询大纲或课堂生成任务的状态与进度 |
 | PUT | `/api/v1/courses/{course_id}/classroom/scenes/{scene_id}/responses` | 提交或覆盖作答，返回判分结果 |
 | GET | `/api/v1/courses/{course_id}/classroom/responses` | 获取当前课堂版本已保存的作答 |
+| POST | `/api/v1/courses/{course_id}/classroom/narration` | 为最新课堂的全部场景生成旁白音频任务 |
+| POST | `/api/v1/courses/{course_id}/classroom/scenes/{scene_id}/narration` | 重新生成单个场景的旁白 |
+| GET | `/api/v1/media/{media_id}` | 查看旁白音频元数据 |
+| GET | `/api/v1/media/{media_id}/content` | 鉴权下载音频，支持 HTTP Range |
 
 生成请求示例：
 
@@ -67,7 +71,42 @@ DSL `0.13.0` 支持四类场景，其中幻灯片与测验是主体，互动与�
 }
 ```
 
-课堂目标为 4-10 个场景，单次生成最多接受 24 个场景，其中 `interactive` 最多 4 个、`pbl` 最多 2 个。当前不生成图片、音频或视频。
+课堂目标为 4-10 个场景，单次生成最多接受 24 个场景，其中 `interactive` 最多 4 个、`pbl` 最多 2 个。课堂生成阶段不合成媒体；旁白音频在课堂生成后按需生成。
+
+## 旁白（TTS）
+
+课堂生成完成后，前端可以手动触发旁白合成。默认使用 `TTS_PROVIDER_ID`（默认 `qwen`）、`qwen3-tts-flash` 与 `Cherry` 女声；也可以在请求中临时覆盖 Provider、模型和音色。设置 `TTS_PROVIDER_ID=edge-tts` 可使用无 Key 的微软中文语音后备。
+
+```json
+{
+  "provider_id": "qwen",
+  "model": "qwen3-tts-flash",
+  "voice": "Cherry"
+}
+```
+
+两个接口都在校验课堂与 Provider 后立即返回 `202` 与 `kind=narration` 的任务，客户端继续轮询 `GET /api/v1/generation/jobs/{job_id}`。整堂生成按场景顺序合成 `speech` 动作；单场景接口只处理指定场景。同一课程同一时间只允许一个旁白任务，重复请求返回 `409 GENERATION_IN_PROGRESS`。
+
+每个 `speech` 动作成功后写回三个字段：
+
+```json
+{
+  "audioId": "媒体资产 UUID",
+  "audioFormat": "mp3",
+  "audioDurationMs": 5230
+}
+```
+
+缓存键由 `provider + model + voice + speed + text` 计算 SHA-256。文本完全相同的场景只合成一次，其余场景复用已落盘音频；文本、音色或 Provider 变化时才重新调用模型。音频保存在 `ASSET_STORAGE_ROOT/{owner_id}/media/{media_id}/audio.<format>`，元数据写入 `media_assets`，其他用户访问返回 404。
+
+常见错误码：
+
+- `TTS_NOT_SUPPORTED`：所选 Provider 没有 TTS 能力。
+- `TTS_ENDPOINT_NOT_SUPPORTED`：TTS Base URL 未暴露 `/audio/speech`，需要改为支持语音合成的网关。
+- `TTS_AUTH_FAILED`：密钥无权访问 TTS 模型。
+- `TTS_TIMEOUT` / `TTS_AUDIO_TOO_LARGE`：合成超时或音频超过 `TTS_MAX_AUDIO_BYTES`。
+
+Qwen 的 TTS Base URL 指向 DashScope 官方根地址时使用原生 `multimodal-generation` 接口；阿里云 MaaS 工作区的 `/compatible-mode/v1` 会自动派生为同主机 `/api/v1`，同样走原生接口；其他兼容网关使用 OpenAI 兼容的 `/audio/speech`。两者都按 Provider 已保存的 API Key 鉴权。
 
 ## 作答与判分
 
@@ -93,6 +132,10 @@ DSL `0.13.0` 支持四类场景，其中幻灯片与测验是主体，互动与�
 ```text
 CLASSROOM_MATERIAL_CHAR_LIMIT=12000
 CLASSROOM_GENERATION_TIMEOUT_SECONDS=900
+TTS_PROVIDER_ID=qwen
+TTS_GENERATION_TIMEOUT_SECONDS=120
+TTS_MAX_TEXT_CHARS=6000
+TTS_MAX_AUDIO_BYTES=20971520
 ```
 
 ## 真实模型诊断
@@ -107,4 +150,4 @@ Qwen Omni 只支持文本输出，课堂调用会自动附加 `modalities: ["tex
 
 脚本读取 `DASHSCOPE_API_KEY`，只输出场景统计，不打印密钥或完整模型响应。
 
-阶段 4B 负责前端课堂渲染器，阶段 4C-1 已补齐互动与项目式场景渲染；作答提交与事件流播放属于 4C 剩余部分。
+阶段 4B 负责前端课堂渲染器，4C 补齐互动、项目式、作答提交与事件流播放；阶段 6A 增加旁白合成、音频资产与播放器音频优先播放。

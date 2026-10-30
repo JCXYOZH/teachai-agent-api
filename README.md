@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册；阶段 6A 已加入按场景的旁白合成、音频资产与鉴权播放。
 
 ## 技术栈
 
@@ -84,6 +84,8 @@ Copy-Item .env.example .env
 - 大纲版本、素材截断、JSON 宽容解析与重试策略见 `docs/outlines.md`。
 - 连接测试会真实请求 `/chat/completions` 或 Anthropic `/messages`；`/models` 仅用于补充模型列表。
 - Qwen 优先读取 `QWEN_API_KEY`，为空时回退到 `DASHSCOPE_API_KEY`。可用 `scripts/check_qwen.py` 验证 `qwen3.8-omni-flash`。
+- 旁白可用 `scripts/check_tts.py` 验证；阿里云 MaaS 工作区应传入 `--base-url https://<workspace-host>/api/v1`。
+- 无 Key 场景可设置 `TTS_PROVIDER_ID=edge-tts`，用 `scripts/check_edge_tts.py` 验证微软中文音色。
 
 ## 课堂生成
 
@@ -138,4 +140,4 @@ docker compose up -d
 ## 后续阶段
 
 1. 课堂作答提交、事件流播放与学习进度统计（4C 剩余）。
-2. TTS、图片生成、导出与生产部署。
+2. 图片生成、导出与生产部署（6B-6D）。

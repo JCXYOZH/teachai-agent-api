@@ -12,6 +12,10 @@ class ProviderConfigUpdate(BaseModel):
     base_url: Optional[str] = Field(default=None, max_length=500)
     default_model: Optional[str] = Field(default=None, max_length=200)
     is_default: Optional[bool] = None
+    tts_base_url: Optional[str] = Field(default=None, max_length=500)
+    tts_model: Optional[str] = Field(default=None, max_length=200)
+    tts_voice: Optional[str] = Field(default=None, max_length=120)
+    clear_tts: bool = False
 
     @field_validator("api_key")
     @classmethod
@@ -25,7 +29,7 @@ class ProviderConfigUpdate(BaseModel):
             raise ValueError("API key contains unsupported control characters")
         return normalized
 
-    @field_validator("base_url", "default_model")
+    @field_validator("base_url", "default_model", "tts_base_url", "tts_model", "tts_voice")
     @classmethod
     def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -39,6 +43,11 @@ class ProviderConfigUpdate(BaseModel):
     def reject_conflicting_key_actions(self) -> "ProviderConfigUpdate":
         if self.api_key and self.clear_api_key:
             raise ValueError("api_key and clear_api_key cannot be used together")
+        if self.clear_tts and any(
+            field in self.model_fields_set
+            for field in ("tts_base_url", "tts_model", "tts_voice")
+        ):
+            raise ValueError("clear_tts cannot be combined with TTS settings")
         return self
 
 
@@ -91,6 +100,15 @@ class ProviderView(BaseModel):
     default_model: str
     is_default: bool
     updated_at: Optional[datetime]
+    supports_tts: bool
+    tts_models: List[str] = Field(default_factory=list)
+    tts_voices: List[str] = Field(default_factory=list)
+    tts_base_url: Optional[str] = None
+    tts_model: Optional[str] = None
+    tts_voice: Optional[str] = None
+    tts_effective_base_url: Optional[str] = None
+    tts_effective_model: Optional[str] = None
+    tts_effective_voice: Optional[str] = None
 
 
 class ProviderTestResponse(BaseModel):

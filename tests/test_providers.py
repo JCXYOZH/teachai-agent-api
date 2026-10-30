@@ -45,6 +45,51 @@ async def test_provider_list_contains_registry_defaults(client: AsyncClient) -> 
     assert providers["llama-local"]["default_model"] == settings.llama_model
     assert providers["anthropic"]["protocol"] == "anthropic"
     assert providers["openai"]["configured"] is False
+    assert providers["qwen"]["supports_tts"] is True
+    assert providers["qwen"]["tts_effective_model"] == "qwen3-tts-flash"
+    assert providers["qwen"]["tts_effective_voice"] == "Cherry"
+    assert providers["deepseek"]["supports_tts"] is False
+
+
+async def test_tts_overrides_are_saved_and_cleared(client: AsyncClient) -> None:
+    headers, _ = await register_user(client, "tts-config@example.com")
+
+    saved = await client.put(
+        f"{PROVIDER_PATH}/qwen/config",
+        headers=headers,
+        json={
+            "api_key": "sk-qwen-tts-12345678",
+            "tts_model": "qwen3-tts-flash",
+            "tts_voice": "Serena",
+            "tts_base_url": "https://dashscope.aliyuncs.com",
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["tts_model"] == "qwen3-tts-flash"
+    assert body["tts_voice"] == "Serena"
+    assert body["tts_base_url"] == "https://dashscope.aliyuncs.com"
+    assert body["tts_effective_voice"] == "Serena"
+
+    cleared = await client.put(
+        f"{PROVIDER_PATH}/qwen/config",
+        headers=headers,
+        json={"clear_tts": True},
+    )
+    assert cleared.status_code == 200, cleared.text
+    cleared_body = cleared.json()
+    assert cleared_body["tts_model"] is None
+    assert cleared_body["tts_voice"] is None
+    assert cleared_body["tts_base_url"] is None
+    assert cleared_body["tts_effective_model"] == "qwen3-tts-flash"
+    assert cleared_body["tts_effective_voice"] == "Cherry"
+
+    conflict = await client.put(
+        f"{PROVIDER_PATH}/qwen/config",
+        headers=headers,
+        json={"clear_tts": True, "tts_voice": "Cherry"},
+    )
+    assert conflict.status_code == 422
 
 
 async def test_api_key_is_encrypted_and_masked(client: AsyncClient) -> None:

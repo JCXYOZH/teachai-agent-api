@@ -1,3 +1,4 @@
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
@@ -14,11 +15,13 @@ from app.schemas.classroom import (
     ClassroomSubmitView,
     ClassroomView,
     GenerationJobView,
+    NarrationGenerateRequest,
 )
 from app.services import generation_jobs
 from app.services.classroom_responses import ClassroomResponseService
 from app.services.classrooms import ClassroomService
 from app.services.generation_runner import run_generation_job
+from app.services.narrations import NarrationService
 
 router = APIRouter(prefix="/courses", tags=["classroom"])
 generation_router = APIRouter(prefix="/generation", tags=["generation"])
@@ -32,6 +35,12 @@ def get_response_service(
     db: AsyncSession = Depends(get_db),
 ) -> ClassroomResponseService:
     return ClassroomResponseService(db, settings)
+
+
+def get_narration_service(
+    db: AsyncSession = Depends(get_db),
+) -> NarrationService:
+    return NarrationService(db, settings)
 
 
 @router.post(
@@ -60,6 +69,54 @@ async def get_classroom(
     service: ClassroomService = Depends(get_classroom_service),
 ) -> ClassroomView:
     return await service.get_latest(current_user, course_id)
+
+
+@router.post(
+    "/{course_id}/classroom/narration",
+    response_model=GenerationJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_classroom_narration(
+    course_id: UUID,
+    background_tasks: BackgroundTasks,
+    payload: Optional[NarrationGenerateRequest] = None,
+    current_user: User = Depends(get_current_user),
+    service: NarrationService = Depends(get_narration_service),
+) -> GenerationJobView:
+    job = await service.create_job(
+        current_user,
+        course_id,
+        payload or NarrationGenerateRequest(),
+    )
+    background_tasks.add_task(
+        run_generation_job, job.id, generation_jobs.JOB_KIND_NARRATION
+    )
+    return job
+
+
+@router.post(
+    "/{course_id}/classroom/scenes/{scene_id}/narration",
+    response_model=GenerationJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_scene_narration(
+    course_id: UUID,
+    scene_id: UUID,
+    background_tasks: BackgroundTasks,
+    payload: Optional[NarrationGenerateRequest] = None,
+    current_user: User = Depends(get_current_user),
+    service: NarrationService = Depends(get_narration_service),
+) -> GenerationJobView:
+    job = await service.create_job(
+        current_user,
+        course_id,
+        payload or NarrationGenerateRequest(),
+        scene_id=scene_id,
+    )
+    background_tasks.add_task(
+        run_generation_job, job.id, generation_jobs.JOB_KIND_NARRATION
+    )
+    return job
 
 
 @router.put(
