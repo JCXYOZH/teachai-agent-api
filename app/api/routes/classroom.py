@@ -9,6 +9,8 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.classroom import (
+    ClassroomExportRequest,
+    ClassroomExportsView,
     ClassroomGenerateRequest,
     ClassroomResponseSubmitRequest,
     ClassroomResponsesView,
@@ -21,6 +23,7 @@ from app.schemas.classroom import (
 from app.services import generation_jobs
 from app.services.classroom_responses import ClassroomResponseService
 from app.services.classrooms import ClassroomService
+from app.services.exports import ClassroomExportService
 from app.services.generation_runner import run_generation_job
 from app.services.images import IllustrationService
 from app.services.narrations import NarrationService
@@ -43,6 +46,12 @@ def get_narration_service(
     db: AsyncSession = Depends(get_db),
 ) -> NarrationService:
     return NarrationService(db, settings)
+
+
+def get_export_service(
+    db: AsyncSession = Depends(get_db),
+) -> ClassroomExportService:
+    return ClassroomExportService(db, settings)
 
 
 def get_illustration_service(
@@ -173,6 +182,38 @@ async def generate_scene_illustration(
         run_generation_job, job.id, generation_jobs.JOB_KIND_IMAGE
     )
     return job
+
+
+@router.post(
+    "/{course_id}/classroom/export",
+    response_model=GenerationJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def export_classroom(
+    course_id: UUID,
+    background_tasks: BackgroundTasks,
+    payload: Optional[ClassroomExportRequest] = None,
+    current_user: User = Depends(get_current_user),
+    service: ClassroomExportService = Depends(get_export_service),
+) -> GenerationJobView:
+    job = await service.create_job(
+        current_user, course_id, payload or ClassroomExportRequest()
+    )
+    background_tasks.add_task(
+        run_generation_job, job.id, generation_jobs.JOB_KIND_EXPORT
+    )
+    return job
+
+
+@router.get(
+    "/{course_id}/classroom/exports", response_model=ClassroomExportsView
+)
+async def list_classroom_exports(
+    course_id: UUID,
+    current_user: User = Depends(get_current_user),
+    service: ClassroomExportService = Depends(get_export_service),
+) -> ClassroomExportsView:
+    return await service.list_exports(current_user, course_id)
 
 
 @router.put(

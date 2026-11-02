@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SceneType = Literal["slide", "quiz", "interactive", "pbl"]
 JobStatus = Literal["queued", "running", "completed", "failed"]
-JobKind = Literal["outline", "classroom", "narration", "image"]
+JobKind = Literal["outline", "classroom", "narration", "image", "export"]
+ExportFormat = Literal["pptx", "html"]
 ResponseKind = Literal["question", "microtask"]
 
 
@@ -64,6 +65,14 @@ class IllustrationGenerateRequest(BaseModel):
         if any(ord(character) < 32 and character not in "\n\t" for character in normalized):
             raise ValueError("Text contains unsupported control characters")
         return normalized or None
+
+
+class ClassroomExportRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    format: ExportFormat = "pptx"
+    include_images: bool = True
+    include_audio: bool = True
 
 
 class GenerationJobView(BaseModel):
@@ -201,3 +210,25 @@ class ClassroomResponseView(BaseModel):
 class ClassroomResponsesView(BaseModel):
     stage_id: Optional[UUID]
     responses: List[ClassroomResponseView]
+
+
+class ClassroomExportView(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    format: ExportFormat
+    media_id: UUID
+    filename: str
+    mime_type: str
+    size_bytes: int
+    scene_count: int
+    include_images: bool
+    include_audio: bool
+    warnings: List[str] = Field(default_factory=list)
+    content_url: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClassroomExportsView(BaseModel):
+    stage_id: UUID
+    exports: List[ClassroomExportView] = Field(default_factory=list)

@@ -1,6 +1,6 @@
 # TeachAI Agent API
 
-TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册；阶段 6A 已加入按场景的旁白合成、音频资产与鉴权播放；阶段 6B 已加入课堂配图、Qwen Image 主通道与 Pollinations 无 Key 兜底。
+TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线与运行时健康检查；阶段 2 已实现课程、文件夹、本地素材存储、文档解析与中文检索；阶段 3 已实现用户级 Provider 配置、真实连接测试与版本化课程大纲生成；阶段 4 已实现基于大纲的课堂 DSL 生成、异步任务轮询与邮箱验证码注册；阶段 6A 已加入按场景的旁白合成、音频资产与鉴权播放；阶段 6B 已加入课堂配图、Qwen Image 主通道与 Pollinations 无 Key 兜底；阶段 6C 已加入课堂导出：PPTX 保真版与单文件 HTML，共用导出任务、体积预算与鉴权下载。
 
 ## 技术栈
 
@@ -72,6 +72,8 @@ Copy-Item .env.example .env
 | GET | `/api/v1/courses/{id}/classroom` | 获取最新课堂版本与场景 |
 | POST | `/api/v1/courses/{id}/classroom/illustrations` | 为前 6 个幻灯片场景生成配图 |
 | POST | `/api/v1/courses/{id}/classroom/scenes/{scene_id}/illustration` | 生成或重生成单页配图 |
+| POST | `/api/v1/courses/{id}/classroom/export` | 创建课堂导出任务（pptx / html），返回 202 |
+| GET | `/api/v1/courses/{id}/classroom/exports` | 列出当前课堂版本的导出文件 |
 | GET | `/api/v1/generation/jobs/{id}` | 查询大纲或课堂生成任务的状态与进度 |
 
 错误统一返回：
@@ -98,6 +100,14 @@ Copy-Item .env.example .env
 - 生成失败会把任务标记为 `failed` 并记录错误码，重试后仍失败返回 `CLASSROOM_INVALID_RESPONSE`。
 - 配图每页最多 1 张、整堂最多 6 张；整堂只补齐尚未配图的幻灯片；供应商返回的临时图片 URL 只用于即时下载，不写入数据库。
 - 生成流程、场景格式与真实模型诊断见 `docs/classroom.md`。
+
+## 课堂导出
+
+- `POST /classroom/export` 立即返回 `queued` 任务，渲染完成后写入 `media_assets(kind='export')`，同格式重新导出覆盖同一个文件。
+- PPTX 按 1280×720 画布 1px = 9525 EMU 还原元素位置、字号与配色，配图转 JPEG 并叠渐变暗化，旁白（开启「含旁白」时）与答案进备注页，文末附「参考答案」页；slide 场景按 reveal 动作生成原生「单击出现」动画。
+- HTML 输出单文件：样式、脚本、配图与旁白全部内联，带场景导航、进度条、键盘切换与打印分页，元素 HTML 经白名单清洗；交互组件以 sandbox iframe 内联，可离线操作。
+- 上限由 `EXPORT_MAX_BYTES` 控制（默认 40 MB）；旁白音频按上限 60% 预算裁剪，超出部分丢弃音频并在 `warnings` 中提示。
+- 接口、错误码、文件命名与内容映射见 `docs/export.md`。
 
 ## 认证设计
 
@@ -144,5 +154,5 @@ docker compose up -d
 
 ## 后续阶段
 
-1. 导出与生产部署（6C-6D）。
+1. 生产部署（6D）：Nginx、TLS、资产挂载与 Docker 交付。
 2. 共享任务队列、图片质量评估与可选的正式图片服务商。

@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     image_cloudflare_account_id: str = ""
     image_cloudflare_api_token: str = ""
     image_cloudflare_model: str = "@cf/black-forest-labs/flux-1-schnell"
+    export_max_bytes: int = 40 * 1024 * 1024
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     deepseek_api_key: str = ""
@@ -188,6 +189,10 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "TTS_MAX_AUDIO_BYTES must be between 1048576 and 209715200"
+            )
+        if self.export_max_bytes < 1024 * 1024 or self.export_max_bytes > 512 * 1024 * 1024:
+            raise ValueError(
+                "EXPORT_MAX_BYTES must be between 1048576 and 536870912"
             )
         if self.image_provider_id not in IMAGE_PROVIDER_IDS:
             raise ValueError(

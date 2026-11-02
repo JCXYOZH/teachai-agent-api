@@ -1,3 +1,6 @@
+import re
+from typing import Dict
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -15,6 +18,18 @@ from app.schemas.media import MediaAssetView
 from app.services.media_storage import LocalMediaStorage
 
 router = APIRouter(prefix="/media", tags=["media"])
+
+UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def content_disposition(filename: str) -> str:
+    ascii_name = UNSAFE_FILENAME_CHARS.sub("-", filename).strip("-")
+    if not ascii_name:
+        ascii_name = "classroom-export"
+    return (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
 
 
 def get_media_storage() -> LocalMediaStorage:
@@ -70,12 +85,18 @@ async def get_media_content(
 ) -> FileResponse:
     asset = await _get_asset(db, current_user.id, media_id)
     path = storage.resolve(current_user.id, asset.id, asset.storage_key)
+    headers: Dict[str, str] = {
+        "Cache-Control": "private, max-age=300",
+        "ETag": f'"{asset.sha256}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+    if asset.kind == "export":
+        metadata = asset.media_metadata if isinstance(asset.media_metadata, dict) else {}
+        filename = str(metadata.get("filename") or f"classroom.{asset.format}")
+        headers["Cache-Control"] = "private, no-store"
+        headers["Content-Disposition"] = content_disposition(filename)
     return FileResponse(
         path,
         media_type=asset.mime_type,
-        headers={
-            "Cache-Control": "private, max-age=300",
-            "ETag": f'"{asset.sha256}"',
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=headers,
     )

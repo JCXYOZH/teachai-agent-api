@@ -18,6 +18,7 @@ JOB_KIND_OUTLINE = "outline"
 JOB_KIND_CLASSROOM = "classroom"
 JOB_KIND_NARRATION = "narration"
 JOB_KIND_IMAGE = "image"
+JOB_KIND_EXPORT = "export"
 ACTIVE_STATUSES = ("queued", "running")
 
 
