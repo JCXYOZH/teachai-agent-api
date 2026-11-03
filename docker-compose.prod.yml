@@ -1,0 +1,37 @@
+# Production stack for the TeachAI Agent API.
+# Host Nginx terminates TLS and proxies to 127.0.0.1:65534.
+# PostgreSQL runs on the host, so the container shares the host network and
+# reaches it through 127.0.0.1. uvicorn listens on 0.0.0.0:65534 so the API can also be called directly.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # The server's default bridge DNS cannot resolve pypi.org, so builds use the host network.
+      network: host
+    image: teachai-agent-api:latest
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      WAIT_FOR_DATABASE: "1"
+      RUN_MIGRATIONS: "1"
+    network_mode: host
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "65534"
+      - --proxy-headers
+    volumes:
+      - /data/TeachAIAgent:/data/TeachAIAgent
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

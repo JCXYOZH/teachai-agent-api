@@ -115,7 +115,7 @@ Copy-Item .env.example .env
 - 邮箱统一 `strip().lower()` 规范化，数据库另有 `lower(email)` 唯一索引兜底。
 - 验证码为 6 位数字，默认 10 分钟有效、60 秒重发冷却、最多 5 次尝试；数据库只保存 HMAC-SHA256 摘要。
 - 开发环境 `EMAIL_DELIVERY=log` 会把验证码写入后端日志；配置 `EMAIL_DELIVERY=agentsend` 后通过 agentsend REST API 发送真实邮件。生产环境强制使用 `agentsend`。
-- 密钥只放在 `.env` 的 `AGENTSEND_API_KEY`，不得提交到仓库；inbox 按 `AGENTSEND_INBOX_NAME` 复用，也可用 `AGENTSEND_INBOX_ID` 固定。
+- 密钥只放在 `.env` 的 `AGENTSEND_API_KEY`，不提交到仓库；inbox 按 `AGENTSEND_INBOX_NAME` 复用，也可用 `AGENTSEND_INBOX_ID` 固定。
 - access token 通过 `Authorization: Bearer` 传递，默认 15 分钟。
 - refresh token 仅保存在 HttpOnly cookie 中，数据库只保存 SHA-256 摘要，默认 30 天。
 - 每次刷新都会撤销旧 token 并轮换 refresh token 与 CSRF token。
@@ -156,3 +156,14 @@ docker compose up -d
 
 1. 生产部署（6D）：Nginx、TLS、资产挂载与 Docker 交付。
 2. 共享任务队列、图片质量评估与可选的正式图片服务商。
+
+## 生产部署
+
+生产使用 Docker 容器 + 宿主 Nginx：镜像以非 root 用户 `10001:10001` 运行，容器共用宿主网络并监听 `0.0.0.0:65534`，资产目录以 `/data/TeachAIAgent` bind mount。
+
+```bash
+cp .env.production.example .env.production
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+容器启动时先等待数据库，再执行 `alembic upgrade head`，最后启动 uvicorn；可用 `RUN_MIGRATIONS=0` 改为人工迁移。完整步骤、Nginx 站点模板、验收清单、备份与回滚见 `docs/deployment.md`。
