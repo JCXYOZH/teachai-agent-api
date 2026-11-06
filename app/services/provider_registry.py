@@ -165,5 +165,8 @@ EDGE_TTS_SPEC = ProviderSpec(
 )
 
 
+DEFAULT_GENERATION_PROVIDER_ID = "llama-local"
+
+
 def get_provider_spec(provider_id: str) -> Optional[ProviderSpec]:
     return PROVIDER_SPECS.get(provider_id)

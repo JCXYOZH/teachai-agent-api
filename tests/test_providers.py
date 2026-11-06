@@ -9,8 +9,9 @@ from support import register_and_verify
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.provider_config import ProviderConfig
+from app.models.user import User
 from app.services import providers as provider_service
-from app.services.providers import ProbeResult
+from app.services.providers import ProbeResult, ProviderConfigService
 
 PROVIDER_PATH = f"{settings.api_v1_prefix}/providers"
 
@@ -194,7 +195,7 @@ async def test_clear_and_delete_provider_config(client: AsyncClient) -> None:
         settings.openai_api_key = original_env_key
 
 
-async def test_deleting_default_promotes_another_config(client: AsyncClient) -> None:
+async def test_deleting_selected_config_clears_selection(client: AsyncClient) -> None:
     headers, _ = await register_user(client)
     await client.put(
         f"{PROVIDER_PATH}/openai/config",
@@ -202,16 +203,63 @@ async def test_deleting_default_promotes_another_config(client: AsyncClient) -> 
         json={"api_key": "sk-default-openai-1234", "is_default": True},
     )
     await client.put(
-        f"{PROVIDER_PATH}/llama-local/config",
+        f"{PROVIDER_PATH}/deepseek/config",
         headers=headers,
-        json={"is_default": False},
+        json={"api_key": "sk-deepseek-default-5678"},
     )
 
     response = await client.delete(f"{PROVIDER_PATH}/openai/config", headers=headers)
     assert response.status_code == 204
 
-    provider = await client.get(f"{PROVIDER_PATH}/llama-local", headers=headers)
-    assert provider.json()["is_default"] is True
+    deepseek = await client.get(f"{PROVIDER_PATH}/deepseek", headers=headers)
+    assert deepseek.json()["is_default"] is False
+    local = await client.get(f"{PROVIDER_PATH}/llama-local", headers=headers)
+    assert local.json()["is_default"] is False
+
+
+async def test_saving_config_without_selection_keeps_local_generation(
+    client: AsyncClient,
+) -> None:
+    headers, user_id = await register_user(client, "provider-selection@example.com")
+
+    saved = await client.put(
+        f"{PROVIDER_PATH}/openai/config",
+        headers=headers,
+        json={"api_key": "sk-selection-openai-1234", "default_model": "gpt-4o-mini"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["configured"] is True
+    assert saved.json()["is_default"] is False
+
+    async with AsyncSessionLocal() as session:
+        owner = await session.get(User, user_id)
+        candidates = await ProviderConfigService(
+            session, settings
+        ).resolve_generation_candidates(owner)
+        assert [candidate.spec.id for candidate in candidates] == [
+            "llama-local",
+            "openai",
+        ]
+        primary = await ProviderConfigService(session, settings).resolve_for_generation(
+            owner
+        )
+        assert primary.spec.id == "llama-local"
+
+
+async def test_selected_provider_replaces_local_generation(client: AsyncClient) -> None:
+    headers, user_id = await register_user(client, "provider-active@example.com")
+    await client.put(
+        f"{PROVIDER_PATH}/deepseek/config",
+        headers=headers,
+        json={"api_key": "sk-active-deepseek-1234", "is_default": True},
+    )
+
+    async with AsyncSessionLocal() as session:
+        owner = await session.get(User, user_id)
+        candidates = await ProviderConfigService(
+            session, settings
+        ).resolve_generation_candidates(owner)
+        assert [candidate.spec.id for candidate in candidates] == ["deepseek"]
 
 
 async def test_private_provider_urls_are_rejected(client: AsyncClient) -> None:

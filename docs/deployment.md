@@ -14,6 +14,7 @@
 | 前端端口 | `0.0.0.0:49153`（host 网络，不做端口映射）                                              |
 | 迁移 | 容器启动时自动执行 `alembic upgrade head`                                             |
 | llama.cpp | `http://47.120.68.25:65535/v1` ，模型 `Qwen3.6-35B-A3B`                         |
+| 公网接入 | 海外中转机（宝塔 Nginx）→ `cpolar` 隧道 → 内网 `node2`，见「公网接入链路」                      |
 
 ## 架构
 
@@ -28,6 +29,35 @@
 ```
 
 同源部署是刻意选择：refresh cookie 为 `Path=/api/v1/auth`、CSRF cookie 为 `Path=/`，同源时不需要跨域放行，也不会被 SameSite 拦截。前端 `NEXT_PUBLIC_API_BASE_URL` 生产值为相对路径 `/api/v1`。
+
+## 公网接入链路（海外中转 + cpolar）
+
+实际链路不是单机直连：域名解析到海外中转机，再由 `cpolar` 隧道把请求送回内网 `node2`，因此是三跳。
+
+```text
+浏览器 ──HTTPS──▶ 海外中转 Nginx（ai.offer.us.ci:443，宝塔 /www/server/nginx）
+                    └── 全量代理，Host/SNI 改写为 cpolar 子域名 ──▶ https://<cpolar 子域名>
+                                                                    │ 隧道
+                                                                    ▼
+              node2 Nginx（80，/usr/local/nginx）── cpolar-ingress.conf ──▶ 127.0.0.1:49153 / :65534
+```
+
+三个模板都在 `deploy/nginx/`：
+
+| 文件 | 部署位置 | 作用 |
+| --- | --- | --- |
+| `relay-cpolar-all.conf` | 海外机站点配置 | 全量代理到 cpolar，替换 `__CPOLAR_HOST__`；`/` 与 `/api/` 走同一上游 |
+| `relay-ai-offer-us-ci.conf` | 海外机备用站点配置 | 按路径拆分代理；`/api/` 必须改写 `Host`，否则 cpolar 按 Host 返回它自己的 404 页面 |
+| `cpolar-ingress.conf` | `node2` 的 `conf.d/` | 承接隧道并分流到前端/后端容器 |
+
+踩坑要点：
+
+- 不要用 `return 301` 跳到 cpolar 子域名：浏览器会变成跨域请求，refresh/CSRF cookie 失效。必须保持同源代理。
+- 上游 `Host` 与 TLS SNI 都必须是当前 cpolar 子域名；传 `ai.offer.us.ci` 会命中 cpolar 的 404 页面。
+- cpolar 客户端从 IPv6 `::1` 连入，`cpolar-ingress.conf` 必须同时监听 IPv4/IPv6 并声明 `default_server`，否则隧道请求会落到 `teachai-agent.conf` 的 `:80 return 301`，表现为无限 301。
+- 隧道终点是明文 HTTP，请固定 `X-Forwarded-Proto https` 与 `X-Forwarded-Host ai.offer.us.ci`，否则后端拼出的绝对地址会变成 http。
+- cpolar 子域名每次重建会变化，改完 `__CPOLAR_HOST__` 后需 `nginx -t && nginx -s reload`（两块机器都要）。
+- cpolar 免费额度带宽有限，首屏额外约 2 秒，长任务（课堂生成、导出下载）易断流；长期方案是 frp TCP 透传或直接给内网 443 做端口映射。
 
 ## 服务器准备
 
@@ -66,6 +96,13 @@ docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 
 - 镜像内含 `HEALTHCHECK`，探测 http://127.0.0.1:65534/api/v1/health
 - `APP_ENV=production` 时启动会强制校验：`JWT_SECRET` 非默认且至少 32 字符、`EMAIL_DELIVERY=agentsend`、`AGENTSEND_BASE_URL` 为 HTTPS、`ASSET_STORAGE_ROOT` 为绝对路径。任一不满足即启动失败，属预期行为。
+- 生产环境的 Provider Base URL 必须是 HTTPS；本地 llama.cpp 走明文时，需要在 `.env.production` 里显式放行，否则大纲/课堂生成返回 `422 INSECURE_PROVIDER_URL`：
+
+```text
+PROVIDER_ALLOW_INSECURE_HTTP=47.120.68.25:65535
+```
+
+  该项默认值为空，只放行 `host:port` 精确匹配的地址，不要填写网段或通配域名。
 
 ## 前端
 
@@ -117,7 +154,7 @@ sudo /usr/local/nginx/sbin/nginx -s reload     # 首次启动用：sudo /usr/loc
 - 日志在 `/usr/local/nginx/logs/access.log`、`error.log`，不是 `/var/log/nginx`。
 - 证书续期后执行 `sudo /usr/local/nginx/sbin/nginx -s reload`。
 - 若 80 端口要留给 ACME 校验，`/.well-known/acme-challenge/` 走 `/usr/local/nginx/html/certbot`，用 Certbot `--webroot -w /usr/local/nginx/html/certbot` 签发。
-## 已知环境问题：容器网络 DNS
+## 环境避坑：容器网络 DNS
 
 服务器 Docker 默认 bridge 网络无法解析外部域名（`Temporary failure in name resolution`），但宿主网络正常。表现是镜像构建在 `pip install` / `npm ci` 阶段失败。
 

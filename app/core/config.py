@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     llama_model: str = "Qwen3.6-35B-A3B"
 
     provider_key_encryption_secret: Optional[str] = None
-    provider_allow_insecure_http: str = "47.120.68.25"
+    provider_allow_insecure_http: str = ""
     provider_test_timeout_seconds: float = 20.0
     outline_material_char_limit: int = 16_000
     outline_generation_timeout_seconds: float = 600.0

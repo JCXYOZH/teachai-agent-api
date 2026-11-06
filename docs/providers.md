@@ -26,6 +26,14 @@
 }
 ```
 
+## 生成时使用哪个 Provider
+
+- 大纲与课堂生成默认固定使用本地 `llama-local`（`Qwen3.6-35B-A3B`，读取 `LLAMA_BASE_URL` / `LLAMA_MODEL`）。
+- 只有在设置页勾选「使用当前模型」（即 `is_default: true`）并保存后，生成才会改用该 Provider；同一时间只有一家生效。
+- 只保存配置信息（不勾选）不影响生成，也不存在按配置顺序依次尝试其他厂商的兜底链。
+- 本地模型不可用（连接失败或非 2xx）时，会回退到用户最近保存且凭据完整的配置，仅尝试一次；仍失败则任务失败并提示。
+- 响应解析失败时不切换 Provider，同一 Provider 重试一次；请求里的 `model` 只临时覆盖模型名，不会自动挑选同一厂商的其他模型。
+
 ## 旁白（TTS）配置
 
 `ProviderView` 在原有字段之外返回：
@@ -50,7 +58,7 @@ Qwen 的 TTS Base URL 留空时：Provider Base URL 仍是官方默认地址则�
 }
 ```
 
-可用中文音色包括 `zh-CN-XiaoxiaoNeural`、`zh-CN-XiaoyiNeural`、`zh-CN-YunjianNeural`、`zh-CN-YunxiNeural`、`zh-CN-YunxiaNeural`、`zh-CN-YunyangNeural` 及两个方言音色。该客户端依赖微软在线服务，服务器必须能访问 `speech.platform.bing.com`；它没有官方 SLA，商业部署前应确认服务条款，关键业务建议保留 Qwen 或其他正式 TTS 作为主通道。
+可用中文音色包括 `zh-CN-XiaoxiaoNeural`、`zh-CN-XiaoyiNeural`、`zh-CN-YunjianNeural`、`zh-CN-YunxiNeural`、`zh-CN-YunxiaNeural`、`zh-CN-YunyangNeural` 及两个方言音色。该客户端依赖微软在线服务，服务器必须能访问 `speech.platform.bing.com`；它没有官方 SLA，关键业务建议保留 Qwen 或其他正式 TTS 作为主通道。
 
 自定义 Qwen 兼容网关只需替换 `base_url` 和 `default_model`。例如阿里云 MaaS 地址
 `https://<workspace-host>/compatible-mode/v1` 可直接保存，前提是域名解析到公网地址。
@@ -73,7 +81,7 @@ Qwen 的 TTS Base URL 留空时：Provider Base URL 仍是官方默认地址则�
 - `PROVIDER_KEY_ENCRYPTION_SECRET` 可单独设置；未设置时从 `JWT_SECRET` 派生。生产环境建议单独设置且不要轮换。
 - 自定义 Base URL 拒绝 URL 内嵌账号密码、查询参数、片段、私网/保留地址和重定向。
 - 本地 `localhost`/`127.0.0.1` 仅在开发/测试环境开放；`llama-local` 始终允许本地地址。
-- 每个用户最多只有一个默认 Provider，由数据库部分唯一索引保证。
+- 「使用当前模型」即 `is_default`，每个用户最多只有一个，由数据库部分唯一索引保证；删除该配置后不会自动把其他配置提升为生效项，生成回退到 `llama-local`。
 
 ## 环境变量兜底
 
@@ -119,7 +127,7 @@ $env:DASHSCOPE_API_KEY="sk-..."
 
 配图复用 Qwen Provider 已保存的 API Key 与 Base URL，默认模型为 `qwen-image-3.0`。如果 Base URL 是 MaaS 的 `/compatible-mode/v1`，后端会派生同主机的 `/api/v1/services/aigc/multimodal-generation/generation` 原生图片接口。
 
-Qwen 请求失败、超时、没有可用 Key 或返回内容无法解码时，任务按 `IMAGE_FALLBACK_CHAIN` 的顺序继续尝试。默认链只有 Pollinations `flux`：不需要 Key，适合开发与兜底，但没有官方 SLA；生产环境应监控 `image_provider_failed` 日志并确认服务条款。
+Qwen 请求失败、超时、没有可用 Key 或返回内容无法解码时，任务按 `IMAGE_FALLBACK_CHAIN` 的顺序继续尝试。默认链只有 Pollinations `flux`：不需要 Key，适合开发与兜底，但没有官方 SLA，生产环境建议监控 `image_provider_failed` 日志。
 
 可选兜底通道，未配置凭据时会被跳过并返回 `IMAGE_PROVIDER_NOT_CONFIGURED`：
 

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -99,16 +99,17 @@ class ClassroomService:
                 course.id,
                 self.settings.classroom_material_char_limit,
             )
-            resolved = await ProviderConfigService(
+            candidates = await ProviderConfigService(
                 self.db, self.settings
-            ).resolve_for_generation(owner, job.provider_id)
-            if job.model_name:
-                resolved.default_model = job.model_name
+            ).resolve_generation_candidates(owner, job.provider_id)
+            for candidate in candidates:
+                if job.model_name and candidate.spec.id == job.provider_id:
+                    candidate.default_model = job.model_name
             await generation_jobs.mark_progress(
                 self.db, job_id, progress=40, message="Composing scenes"
             )
-            plan = await self._generate_plan(
-                resolved=resolved,
+            plan, resolved = await self._generate_plan_with_fallback(
+                candidates=candidates,
                 course=course,
                 outline=outline,
                 instructions=job.payload.get("instructions")
@@ -116,6 +117,8 @@ class ClassroomService:
                 else None,
                 materials=materials,
             )
+            job.provider_id = resolved.spec.id
+            job.model_name = resolved.default_model
             await self._create_stage(
                 owner=owner,
                 course=course,
@@ -170,6 +173,44 @@ class ClassroomService:
 
     async def get_job(self, owner: User, job_id: UUID) -> GenerationJobView:
         return await generation_jobs.get_job_view(self.db, owner, job_id)
+
+    async def _generate_plan_with_fallback(
+        self,
+        *,
+        candidates: List[ResolvedProvider],
+        course: Course,
+        outline: CourseOutline,
+        instructions: Optional[str],
+        materials: MaterialBundle,
+    ) -> Tuple[ClassroomPlan, ResolvedProvider]:
+        last_error: Optional[AppError] = None
+        for index, resolved in enumerate(candidates):
+            try:
+                plan = await self._generate_plan(
+                    resolved=resolved,
+                    course=course,
+                    outline=outline,
+                    instructions=instructions,
+                    materials=materials,
+                )
+                return plan, resolved
+            except AppError as exc:
+                if exc.code != "CLASSROOM_PROVIDER_ERROR":
+                    raise
+                last_error = exc
+                if index + 1 < len(candidates):
+                    logger.warning(
+                        "classroom_provider_fallback from=%s to=%s",
+                        resolved.spec.id,
+                        candidates[index + 1].spec.id,
+                    )
+        if last_error is not None:
+            raise last_error
+        raise AppError(
+            502,
+            "CLASSROOM_PROVIDER_ERROR",
+            "Model provider failed to generate the classroom",
+        )
 
     async def _generate_plan(
         self,

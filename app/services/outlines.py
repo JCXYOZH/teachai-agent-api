@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import httpx
@@ -91,24 +91,27 @@ class OutlineService:
                 course.id,
                 self.settings.outline_material_char_limit,
             )
-            resolved = await ProviderConfigService(
+            candidates = await ProviderConfigService(
                 self.db, self.settings
-            ).resolve_for_generation(owner, job.provider_id)
-            if job.model_name:
-                resolved.default_model = job.model_name
+            ).resolve_generation_candidates(owner, job.provider_id)
+            for candidate in candidates:
+                if job.model_name and candidate.spec.id == job.provider_id:
+                    candidate.default_model = job.model_name
             await generation_jobs.mark_progress(
                 self.db, job_id, progress=35, message="Generating outline"
             )
             instructions = job.payload.get("instructions")
             scene_count = job.payload.get("scene_count")
-            normalized = await self._generate_normalized_outline(
-                resolved=resolved,
+            normalized, resolved = await self._generate_with_fallback(
+                candidates=candidates,
                 course_title=course.title,
                 description=course.description,
                 instructions=instructions if isinstance(instructions, str) else None,
                 target_scene_count=scene_count if isinstance(scene_count, int) else None,
                 materials=materials,
             )
+            job.provider_id = resolved.spec.id
+            job.model_name = resolved.default_model
             await generation_jobs.mark_progress(
                 self.db, job_id, progress=90, message="Saving outline"
             )
@@ -198,6 +201,46 @@ class OutlineService:
             material_asset_count=0,
             material_char_count=0,
             materials_truncated=False,
+        )
+
+    async def _generate_with_fallback(
+        self,
+        *,
+        candidates: List[ResolvedProvider],
+        course_title: str,
+        description: Optional[str],
+        instructions: Optional[str],
+        target_scene_count: Optional[int],
+        materials: MaterialBundle,
+    ) -> Tuple[NormalizedOutline, ResolvedProvider]:
+        last_error: Optional[AppError] = None
+        for index, resolved in enumerate(candidates):
+            try:
+                normalized = await self._generate_normalized_outline(
+                    resolved=resolved,
+                    course_title=course_title,
+                    description=description,
+                    instructions=instructions,
+                    target_scene_count=target_scene_count,
+                    materials=materials,
+                )
+                return normalized, resolved
+            except AppError as exc:
+                if exc.code != "OUTLINE_PROVIDER_ERROR":
+                    raise
+                last_error = exc
+                if index + 1 < len(candidates):
+                    logger.warning(
+                        "outline_provider_fallback from=%s to=%s",
+                        resolved.spec.id,
+                        candidates[index + 1].spec.id,
+                    )
+        if last_error is not None:
+            raise last_error
+        raise AppError(
+            502,
+            "OUTLINE_PROVIDER_ERROR",
+            "Model provider failed to generate the outline",
         )
 
     async def _generate_normalized_outline(

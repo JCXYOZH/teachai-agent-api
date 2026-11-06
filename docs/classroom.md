@@ -28,7 +28,7 @@
 }
 ```
 
-`provider_id` 省略时使用当前用户默认 Provider；没有默认配置时回退到 `llama-local`。`model` 可临时覆盖默认模型。生成前必须已有课程大纲，否则返回 `OUTLINE_NOT_FOUND`。
+`provider_id` 省略时默认使用本地 `llama-local`；只有用户在设置页勾选「使用当前模型」（`is_default`）并保存后才改用该 Provider，本地模型不可用时会对其已保存配置单次回退。`model` 可临时覆盖模型名，但不会切换到其他模型。生成前必须已有课程大纲，否则返回 `OUTLINE_NOT_FOUND`。
 
 接口不会等待模型返回：写入 `generation_jobs` 后立即返回 `201` 与 `status=queued` 的任务，生成在后台执行。客户端轮询该任务直到 `completed` 或 `failed`；完成时 `stage_id` 指向新课堂版本，`scene_count` 为场景数。
 

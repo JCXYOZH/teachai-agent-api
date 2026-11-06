@@ -21,6 +21,7 @@ from app.schemas.provider import (
     ProviderView,
 )
 from app.services.provider_registry import (
+    DEFAULT_GENERATION_PROVIDER_ID,
     EDGE_TTS_SPEC,
     PROVIDER_SPECS,
     ProviderSpec,
@@ -277,15 +278,7 @@ class ProviderConfigService:
         elif payload.is_default is False:
             config.is_default = False
         elif is_new:
-            existing_default = await self.db.scalar(
-                select(ProviderConfig.id)
-                .where(
-                    ProviderConfig.owner_id == owner.id,
-                    ProviderConfig.is_default.is_(True),
-                )
-                .limit(1)
-            )
-            config.is_default = existing_default is None
+            config.is_default = False
 
         try:
             await self.db.commit()
@@ -304,18 +297,7 @@ class ProviderConfigService:
         config = await self._get_config(owner.id, provider_id)
         if config is None:
             raise AppError(404, "PROVIDER_CONFIG_NOT_FOUND", "Provider config not found")
-        was_default = config.is_default
         await self.db.delete(config)
-        await self.db.flush()
-        if was_default:
-            replacement = await self.db.scalar(
-                select(ProviderConfig)
-                .where(ProviderConfig.owner_id == owner.id)
-                .order_by(ProviderConfig.created_at, ProviderConfig.id)
-                .limit(1)
-            )
-            if replacement is not None:
-                replacement.is_default = True
         await self.db.commit()
 
     async def test_connection(
@@ -380,12 +362,12 @@ class ProviderConfigService:
             models=result.models[:50],
         )
 
-    async def resolve_for_generation(
+    async def resolve_generation_candidates(
         self, owner: User, provider_id: Optional[str] = None
-    ) -> ResolvedProvider:
+    ) -> List[ResolvedProvider]:
         selected_id = provider_id
         if selected_id is None:
-            default_config = await self.db.scalar(
+            selected_config = await self.db.scalar(
                 select(ProviderConfig)
                 .where(
                     ProviderConfig.owner_id == owner.id,
@@ -393,9 +375,31 @@ class ProviderConfigService:
                 )
                 .limit(1)
             )
-            selected_id = default_config.provider_id if default_config else "llama-local"
-        spec = self._spec(selected_id)
-        config = await self._get_config(owner.id, selected_id)
+            selected_id = (
+                selected_config.provider_id
+                if selected_config is not None
+                else DEFAULT_GENERATION_PROVIDER_ID
+            )
+        primary = await self._resolve_ready(owner, selected_id)
+        candidates = [primary]
+        if primary.spec.id != DEFAULT_GENERATION_PROVIDER_ID:
+            return candidates
+        fallback = await self._resolve_fallback(owner)
+        if fallback is not None:
+            candidates.append(fallback)
+        return candidates
+
+    async def resolve_for_generation(
+        self, owner: User, provider_id: Optional[str] = None
+    ) -> ResolvedProvider:
+        candidates = await self.resolve_generation_candidates(owner, provider_id)
+        return candidates[0]
+
+    async def _resolve_ready(
+        self, owner: User, provider_id: str
+    ) -> ResolvedProvider:
+        spec = self._spec(provider_id)
+        config = await self._get_config(owner.id, provider_id)
         resolved = self._resolve(spec, config)
         resolved.base_url = await validate_provider_base_url(
             resolved.base_url, spec, self.settings
@@ -407,6 +411,31 @@ class ProviderConfigService:
                 "This provider requires an API key",
             )
         return resolved
+
+    async def _resolve_fallback(self, owner: User) -> Optional[ResolvedProvider]:
+        configs = await self.db.scalars(
+            select(ProviderConfig)
+            .where(
+                ProviderConfig.owner_id == owner.id,
+                ProviderConfig.provider_id != DEFAULT_GENERATION_PROVIDER_ID,
+            )
+            .order_by(ProviderConfig.updated_at.desc().nullslast(), ProviderConfig.id)
+        )
+        for config in configs.all():
+            spec = get_provider_spec(config.provider_id)
+            if spec is None:
+                continue
+            resolved = self._resolve(spec, config)
+            if spec.requires_api_key and not resolved.api_key:
+                continue
+            try:
+                resolved.base_url = await validate_provider_base_url(
+                    resolved.base_url, spec, self.settings
+                )
+            except AppError:
+                continue
+            return resolved
+        return None
 
     async def resolve_tts_provider(
         self,

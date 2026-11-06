@@ -4,19 +4,19 @@ TeachAIAgent 的后端服务。阶段 1 已完成用户认证、数据库基线�
 
 ## 技术栈
 
-| 组件 | 版本 |
-| --- | --- |
-| Python | 3.8.9 |
+| 组件 | 版本      |
+| --- |---------|
+| Python | 3.8.9   |
 | FastAPI | 0.124.4 |
-| Starlette | 0.41.3 |
-| Pydantic | 2.9.2 |
-| SQLAlchemy | 2.0.36 |
-| asyncpg | 0.29.0 |
-| Alembic | 1.13.3 |
-| LangChain | 0.1.16 |
-| langchain-openai | 0.1.3 |
-| Swagger UI | 5.17.14（本地静态资源） |
-| PostgreSQL | 16 |
+| Starlette | 0.41.3  |
+| Pydantic | 2.9.2   |
+| SQLAlchemy | 2.0.36  |
+| asyncpg | 0.29.0  |
+| Alembic | 1.13.3  |
+| LangChain | 0.1.16  |
+| langchain-openai | 0.1.3   |
+| Swagger UI | 5.17.14 |
+| PostgreSQL | 16.15   |
 
 
 ## 本地启动
@@ -154,8 +154,12 @@ docker compose up -d
 
 ## 后续阶段
 
-1. 生产部署（6D）：Nginx、TLS、资产挂载与 Docker 交付。
-2. 共享任务队列、图片质量评估与可选的正式图片服务商。
+阶段 6D 已完成：Docker 镜像、宿主 Nginx、TLS、资产挂载与公网接入链路均已落地，详见 `docs/deployment.md`。
+
+后续待开发项集中记录在 `docs/roadmap.md`，当前优先级最高的两项是：
+
+1. 用户输入文本清洗补全（建课标题/描述、文件夹名、手工保存大纲仍可能因 NUL 字符触发 500）。
+2. 课堂内「用户 ↔ 教师」对话问答（单 Agent，明确不做教师/助教/学生多 Agent）。
 
 ## 生产部署
 

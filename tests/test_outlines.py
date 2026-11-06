@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from support import register_and_verify
 
 from app.core.config import settings
+from app.core.errors import AppError
 from app.db.session import AsyncSessionLocal
 from app.models.outline import CourseOutline
 from app.schemas.outline import OutlineSceneInput
@@ -337,6 +338,57 @@ async def test_default_provider_is_used(
 
     assert response.status_code == 201, response.text
     assert response.json()["provider_id"] == "openai"
+
+
+async def test_local_model_failure_falls_back_to_saved_provider(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await register_user(client, "fallback-outline@example.com")
+    course_id = await create_course(client, headers)
+    await client.put(
+        f"{API}/providers/openai/config",
+        headers=headers,
+        json={
+            "api_key": "sk-outline-fallback-1234",
+            "default_model": "gpt-4o-mini",
+        },
+    )
+
+    attempts: List[str] = []
+
+    async def fake_call(
+        self: OutlineService,
+        resolved: Any,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> str:
+        attempts.append(resolved.spec.id)
+        if resolved.spec.id == "llama-local":
+            raise AppError(
+                502,
+                "OUTLINE_PROVIDER_ERROR",
+                "Model provider failed to generate the outline",
+            )
+        return outline_json()
+
+    monkeypatch.setattr(OutlineService, "_call_provider", fake_call)
+
+    response = await client.post(
+        f"{API}/courses/{course_id}/outline/generate",
+        headers=headers,
+        json={},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["provider_id"] == "llama-local"
+
+    job = await job_state(client, headers, response.json()["id"])
+    assert job["status"] == "completed"
+    assert job["provider_id"] == "openai"
+    assert attempts == ["llama-local", "openai"]
+
+    outline = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
+    assert outline.status_code == 200, outline.text
+    assert outline.json()["provider_id"] == "openai"
 
 
 async def test_generation_retries_invalid_model_output(

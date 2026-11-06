@@ -21,7 +21,7 @@
 }
 ```
 
-`provider_id` 省略时使用当前用户的默认 Provider；没有默认配置时回退到 `llama-local`。`model` 可临时覆盖 Provider 的默认模型。
+`provider_id` 省略时默认使用本地 `llama-local`；只有用户在设置页勾选「使用当前模型」（`is_default`）并保存后才改用该 Provider，本地模型不可用时会对其已保存配置单次回退。`model` 可临时覆盖模型名，但不会切换到其他模型。
 
 与课堂生成一致，接口返回 `201` 与 `kind=outline` 的任务（`status=queued`），不等待模型。客户端轮询 `GET /api/v1/generation/jobs/{job_id}`，任务完成时 `outline_id` 指向新版本，随后用 `GET /api/v1/courses/{course_id}/outline` 读取内容。已有大纲任务在排队或运行时，重复请求返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 可继续轮询。
 

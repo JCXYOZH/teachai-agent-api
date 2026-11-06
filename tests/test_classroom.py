@@ -7,6 +7,7 @@ from sqlalchemy import select
 from support import register_and_verify
 
 from app.core.config import settings
+from app.core.errors import AppError
 from app.db.session import AsyncSessionLocal
 from app.models.classroom import GenerationJob
 from app.models.course import Course
@@ -275,6 +276,57 @@ async def test_generate_get_and_regenerate_classroom(client: AsyncClient, monkey
 
     latest = await client.get(f"{API}/courses/{course_id}/classroom", headers=headers)
     assert latest.json()["version"] == 2
+
+
+async def test_classroom_falls_back_when_local_model_unreachable(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await register_user(client, "fallback-classroom@example.com")
+    course_id = await create_course(client, headers)
+    await save_outline(client, headers, course_id)
+    await client.put(
+        f"{API}/providers/openai/config",
+        headers=headers,
+        json={
+            "api_key": "sk-classroom-fallback-1234",
+            "default_model": "gpt-4o-mini",
+        },
+    )
+
+    attempts: List[str] = []
+
+    async def fake_call(
+        self: ClassroomService,
+        resolved: Any,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> str:
+        attempts.append(resolved.spec.id)
+        if resolved.spec.id == "llama-local":
+            raise AppError(
+                502,
+                "CLASSROOM_PROVIDER_ERROR",
+                "Model provider failed to generate the classroom",
+            )
+        return classroom_json()
+
+    monkeypatch.setattr(ClassroomService, "_call_provider", fake_call)
+
+    generated = await client.post(
+        f"{API}/courses/{course_id}/classroom/generate",
+        headers=headers,
+        json={},
+    )
+    assert generated.status_code == 201, generated.text
+
+    job = await job_state(client, headers, generated.json()["id"])
+    assert job["status"] == "completed"
+    assert job["provider_id"] == "openai"
+    assert attempts == ["llama-local", "openai"]
+
+    fetched = await client.get(f"{API}/courses/{course_id}/classroom", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["provider_id"] == "openai"
 
 
 async def test_classroom_requires_an_outline(client: AsyncClient) -> None:
