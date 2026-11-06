@@ -210,6 +210,18 @@ def _extract_text(path: Path) -> Tuple[List[Tuple[Dict[str, Any], str]], Optiona
     return sections, None
 
 
+def _sanitize_text(value: str) -> str:
+    """Drop characters a PostgreSQL text column cannot store.
+
+    PyMuPDF emits NUL bytes for unmapped glyphs in some fonts, and a lone
+    surrogate cannot be encoded at all; either one used to abort the whole
+    upload with a 500 from asyncpg.
+    """
+    if "\x00" in value:
+        value = value.replace("\x00", "")
+    return value.encode("utf-8", "ignore").decode("utf-8")
+
+
 def _limit_sections(
     raw_sections: List[Tuple[Dict[str, Any], str]],
     page_count: Optional[int],
@@ -219,7 +231,7 @@ def _limit_sections(
     remaining = max_chars
     truncated = False
     for locator, raw_text in raw_sections:
-        text = re.sub(r"\n{3,}", "\n\n", raw_text).strip()
+        text = _sanitize_text(re.sub(r"\n{3,}", "\n\n", raw_text)).strip()
         if not text:
             continue
         if remaining <= 0:

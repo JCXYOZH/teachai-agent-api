@@ -117,7 +117,7 @@ sudo /usr/local/nginx/sbin/nginx -s reload     # 首次启动用：sudo /usr/loc
 - 日志在 `/usr/local/nginx/logs/access.log`、`error.log`，不是 `/var/log/nginx`。
 - 证书续期后执行 `sudo /usr/local/nginx/sbin/nginx -s reload`。
 - 若 80 端口要留给 ACME 校验，`/.well-known/acme-challenge/` 走 `/usr/local/nginx/html/certbot`，用 Certbot `--webroot -w /usr/local/nginx/html/certbot` 签发。
-## 避坑环境问题：容器网络 DNS
+## 已知环境问题：容器网络 DNS
 
 服务器 Docker 默认 bridge 网络无法解析外部域名（`Temporary failure in name resolution`），但宿主网络正常。表现是镜像构建在 `pip install` / `npm ci` 阶段失败。
 

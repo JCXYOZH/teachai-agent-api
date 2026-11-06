@@ -96,6 +96,16 @@ class LocalAssetStorage:
                     await output.write(chunk)
             if total == 0:
                 raise AppError(422, "EMPTY_FILE", "Uploaded file is empty")
+        except AppError:
+            await self.discard_pending(owner_id, asset_id)
+            raise
+        except OSError as exc:
+            await self.discard_pending(owner_id, asset_id)
+            raise AppError(
+                503,
+                "STORAGE_UNAVAILABLE",
+                "Media could not be written to storage",
+            ) from exc
         except BaseException:
             await self.discard_pending(owner_id, asset_id)
             raise
@@ -109,7 +119,14 @@ class LocalAssetStorage:
         )
 
     def finalize(self, pending: PendingUpload) -> None:
-        os.replace(str(pending.temp_path), str(pending.target_path))
+        try:
+            os.replace(str(pending.temp_path), str(pending.target_path))
+        except OSError as exc:
+            raise AppError(
+                503,
+                "STORAGE_UNAVAILABLE",
+                "Media could not be written to storage",
+            ) from exc
 
     async def discard_pending(self, owner_id: UUID, asset_id: UUID) -> None:
         asset_dir = self.root / str(owner_id) / str(asset_id)
