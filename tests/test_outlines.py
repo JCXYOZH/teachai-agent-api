@@ -598,3 +598,41 @@ async def test_manual_save_rejects_empty_or_unknown_scenes(client: AsyncClient) 
         json={"scenes": [{"type": "video", "title": "x"}]},
     )
     assert unknown_type.status_code == 422
+
+
+async def test_generated_outline_sanitizes_nul_bytes(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await register_user(client, "outline-nul@example.com")
+    course_id = await create_course(client, headers)
+    payload = json.loads(outline_json())
+    payload["courseTitle"] = "极限\u0000与连续"
+    payload["outlines"][1]["widgetOutline"] = {
+        "concept": "limit\u0000",
+        "keyVariables": ["delta\u0000"],
+    }
+
+    async def fake_call(
+        self: OutlineService,
+        resolved: Any,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> str:
+        return json.dumps(payload, ensure_ascii=False)
+
+    monkeypatch.setattr(OutlineService, "_call_provider", fake_call)
+
+    generated = await client.post(
+        f"{API}/courses/{course_id}/outline/generate",
+        headers=headers,
+        json={},
+    )
+    assert generated.status_code == 201, generated.text
+    job = await job_state(client, headers, generated.json()["id"])
+    assert job["status"] == "completed"
+
+    fetched = await client.get(
+        f"{API}/courses/{course_id}/outline", headers=headers
+    )
+    assert fetched.status_code == 200
+    assert "\x00" not in json.dumps(fetched.json())

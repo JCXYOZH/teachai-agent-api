@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.core.text import sanitize_json, sanitize_text
 from app.core.time import utcnow
 from app.models.classroom import CourseScene, CourseStage, GenerationJob
 from app.models.course import Course
@@ -304,9 +305,9 @@ class ClassroomService:
             course_id=course.id,
             outline_id=outline.id,
             version=int(latest_version or 0) + 1,
-            name=plan.name,
-            description=plan.description,
-            style=plan.style,
+            name=sanitize_text(plan.name),
+            description=sanitize_text(plan.description),
+            style=sanitize_text(plan.style),
             language_directive=outline.language_directive,
             dsl_version=DSL_VERSION,
             provider_id=job.provider_id,
@@ -323,10 +324,10 @@ class ClassroomService:
                     owner_id=owner.id,
                     stage_id=stage.id,
                     scene_type=item["type"],
-                    title=item["title"],
+                    title=sanitize_text(item["title"]),
                     order_index=item["order"],
-                    content=item["content"],
-                    actions=item["actions"],
+                    content=sanitize_json(item["content"]),
+                    actions=sanitize_json(item["actions"]),
                 )
             )
 

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.core.text import sanitize_json, sanitize_text
 from app.models.classroom import GenerationJob
 from app.models.course import Course
 from app.models.outline import CourseOutline
@@ -453,8 +454,8 @@ class OutlineService:
             provider_id=provider_id,
             model_name=model_name,
             language_directive=normalized.language_directive,
-            course_title=normalized.course_title,
-            scenes=normalized.scenes,
+            course_title=sanitize_text(normalized.course_title),
+            scenes=sanitize_json(normalized.scenes),
             prompt_version="outline-v1",
             material_asset_count=material_asset_count,
             material_char_count=material_char_count,

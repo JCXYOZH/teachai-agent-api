@@ -1,6 +1,6 @@
 import ipaddress
 import socket
-from typing import List, Set
+from typing import List, Optional, Set
 from urllib.parse import urlsplit, urlunsplit
 
 from starlette.concurrency import run_in_threadpool
@@ -24,6 +24,18 @@ def _trusted_hosts(spec: ProviderSpec) -> Set[str]:
 
 def _is_loopback_hostname(host: str) -> bool:
     return host == "localhost" or host.endswith(".localhost")
+
+
+def _allowlisted_insecure_host(
+    host: str, port: Optional[int], settings: Settings
+) -> bool:
+    entries = settings.provider_allow_insecure_http_set
+    if not entries:
+        return False
+    candidates = {host}
+    if port is not None:
+        candidates.add(f"{host}:{port}")
+    return bool(entries & candidates)
 
 
 def _resolve(host: str, port: int) -> List[str]:
@@ -59,14 +71,21 @@ async def validate_provider_base_url(
         except ValueError:
             pass
 
-    if parsed.scheme == "http" and not trusted and not loopback and settings.app_env == "production":
+    allowlisted = _allowlisted_insecure_host(host, port, settings)
+    if (
+        parsed.scheme == "http"
+        and not trusted
+        and not loopback
+        and not allowlisted
+        and settings.app_env == "production"
+    ):
         raise AppError(
             422,
             "INSECURE_PROVIDER_URL",
             "HTTPS is required for external provider URLs in production",
         )
 
-    if not trusted:
+    if not trusted and not allowlisted:
         local_allowed = spec.id == "llama-local" or settings.app_env in {
             "development",
             "test",

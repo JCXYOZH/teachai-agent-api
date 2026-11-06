@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     llama_model: str = "Qwen3.6-35B-A3B"
 
     provider_key_encryption_secret: Optional[str] = None
+    provider_allow_insecure_http: str = "47.120.68.25"
     provider_test_timeout_seconds: float = 20.0
     outline_material_char_limit: int = 16_000
     outline_generation_timeout_seconds: float = 600.0
@@ -206,6 +207,14 @@ class Settings(BaseSettings):
                     "huggingface or cloudflare entries"
                 )
         return self
+
+    @property
+    def provider_allow_insecure_http_set(self) -> Set[str]:
+        return {
+            entry.strip().lower()
+            for entry in self.provider_allow_insecure_http.split(",")
+            if entry.strip()
+        }
 
     @property
     def cors_origin_list(self) -> List[str]:
