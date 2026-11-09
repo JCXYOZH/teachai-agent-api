@@ -320,3 +320,63 @@ async def test_upload_enforces_size_limit(
         )
     assert response.status_code == 413
     assert response.json()['error']['code'] == 'FILE_TOO_LARGE'
+
+
+
+async def test_course_and_folder_inputs_are_cleaned(client: AsyncClient) -> None:
+    headers, _ = await register_user(client, 'sanitize-library@example.com')
+    long_gap = ' ' * 4000
+    created = await client.post(
+        f'{settings.api_v1_prefix}/courses',
+        headers=headers,
+        json={
+            'title': '极限\x00与\ud800连续' + long_gap,
+            'description': '第一行\x00\r\n\r\n\r\n第二行' + long_gap,
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body['title'] == '极限与连续'
+    assert body['description'] == '第一行\n\n第二行'
+
+    updated = await client.patch(
+        f'{settings.api_v1_prefix}/courses/{body["id"]}',
+        headers=headers,
+        json={
+            'title': '新\x00标题' + long_gap,
+            'description': '说明\ud800' + long_gap,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['title'] == '新标题'
+    assert updated.json()['description'] == '说明'
+
+    folder = await client.post(
+        f'{settings.api_v1_prefix}/folders',
+        headers=headers,
+        json={'name': '资料\x00夹' + long_gap},
+    )
+    assert folder.status_code == 201, folder.text
+    assert folder.json()['name'] == '资料夹'
+
+    renamed = await client.patch(
+        f'{settings.api_v1_prefix}/folders/{folder.json()["id"]}',
+        headers=headers,
+        json={'name': '新\x00文件夹' + long_gap},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()['name'] == '新文件夹'
+
+
+async def test_search_query_is_cleaned(client: AsyncClient) -> None:
+    headers, _ = await register_user(client, 'sanitize-search@example.com')
+    await create_course(client, headers, '极限与连续')
+
+    response = await client.get(
+        f'{settings.api_v1_prefix}/search',
+        headers=headers,
+        params={'q': '极限\x00'},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()['query'] == '极限'
+    assert response.json()['total'] == 1

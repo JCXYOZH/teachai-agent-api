@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.core.text import sanitize_text
 from app.core.time import utcnow
 from app.models.classroom import ClassroomResponse, CourseScene, CourseStage
 from app.models.course import Course
@@ -197,7 +198,7 @@ class ClassroomResponseService:
         if target.get("type") == "short_answer":
             text = ""
             if item.answer:
-                text = str(item.answer[0])[:MAX_SHORT_ANSWER_CHARS]
+                text = sanitize_text(str(item.answer[0]))[:MAX_SHORT_ANSWER_CHARS].strip()
             if not text:
                 raise AppError(
                     400,
@@ -207,7 +208,7 @@ class ClassroomResponseService:
             return {"text": text}, None, 0, None
 
         expected = {str(value) for value in target.get("answer") or []}
-        selected = {str(value) for value in item.answer}
+        selected = {sanitize_text(str(value)) for value in item.answer}
         if not expected:
             return {"selected": sorted(selected)}, None, 0, None
         correct = selected == expected

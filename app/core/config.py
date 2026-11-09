@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     outline_generation_timeout_seconds: float = 600.0
     classroom_material_char_limit: int = 12_000
     classroom_generation_timeout_seconds: float = 600.0
+    chat_max_message_chars: int = 2000
+    chat_history_messages: int = 12
+    chat_material_char_limit: int = 6000
+    chat_generation_timeout_seconds: float = 180.0
+    chat_max_tokens: int = 1500
+    chat_daily_message_limit: int = 200
     tts_provider_id: str = "qwen"
     tts_generation_timeout_seconds: float = 120.0
     tts_max_text_chars: int = 6000
@@ -173,6 +179,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CLASSROOM_GENERATION_TIMEOUT_SECONDS must be between 60 and 1800"
             )
+        if not 200 <= self.chat_max_message_chars <= 8000:
+            raise ValueError("CHAT_MAX_MESSAGE_CHARS must be between 200 and 8000")
+        if not 2 <= self.chat_history_messages <= 40:
+            raise ValueError("CHAT_HISTORY_MESSAGES must be between 2 and 40")
+        if not 1000 <= self.chat_material_char_limit <= 40_000:
+            raise ValueError("CHAT_MATERIAL_CHAR_LIMIT must be between 1000 and 40000")
+        if not 10 <= self.chat_generation_timeout_seconds <= 600:
+            raise ValueError("CHAT_GENERATION_TIMEOUT_SECONDS must be between 10 and 600")
+        if not 256 <= self.chat_max_tokens <= 8192:
+            raise ValueError("CHAT_MAX_TOKENS must be between 256 and 8192")
+        if not 1 <= self.chat_daily_message_limit <= 10_000:
+            raise ValueError("CHAT_DAILY_MESSAGE_LIMIT must be between 1 and 10000")
         if not self.tts_provider_id.strip():
             raise ValueError("TTS_PROVIDER_ID must not be empty")
         if (

@@ -96,6 +96,7 @@ class ProviderView(BaseModel):
     api_key_configured: bool
     api_key_hint: Optional[str]
     api_key_source: Optional[Literal["user", "environment"]]
+    api_key_readable: bool = True
     base_url: str
     default_model: str
     is_default: bool

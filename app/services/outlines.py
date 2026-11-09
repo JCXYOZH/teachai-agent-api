@@ -496,7 +496,7 @@ class OutlineService:
             source=source,
             provider_id=provider_id,
             model_name=model_name,
-            language_directive=normalized.language_directive,
+            language_directive=sanitize_text(normalized.language_directive),
             course_title=sanitize_text(normalized.course_title),
             scenes=sanitize_json(normalized.scenes),
             prompt_version="outline-v1",

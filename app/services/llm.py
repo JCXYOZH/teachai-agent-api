@@ -17,6 +17,10 @@ class LLMProviderError(RuntimeError):
     pass
 
 
+class LLMEmptyResponseError(LLMProviderError):
+    pass
+
+
 def message_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -81,7 +85,7 @@ async def call_openai_compatible(
             logger.warning(
                 "llm_empty_content model=%s finish_reason=%s", model, finish_reason
             )
-            raise LLMProviderError(
+            raise LLMEmptyResponseError(
                 f"Model returned no content (finish_reason={finish_reason})"
             )
         return text
@@ -155,5 +159,5 @@ async def call_anthropic(
     except ValueError as exc:
         raise LLMProviderError("Model provider returned invalid JSON") from exc
     if not text.strip():
-        raise LLMProviderError("Model provider returned an empty response")
+        raise LLMEmptyResponseError("Model provider returned an empty response")
     return text

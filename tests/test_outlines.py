@@ -688,3 +688,47 @@ async def test_generated_outline_sanitizes_nul_bytes(
     )
     assert fetched.status_code == 200
     assert "\x00" not in json.dumps(fetched.json())
+
+
+
+async def test_manual_outline_inputs_are_cleaned(client: AsyncClient) -> None:
+    headers = await register_user(client, "sanitize-outline@example.com")
+    course_id = await create_course(client, headers)
+    long_gap = " " * 4000
+
+    saved = await client.put(
+        f"{API}/courses/{course_id}/outline",
+        headers=headers,
+        json={
+            "course_title": "极限\x00与连续" + long_gap,
+            "language_directive": "用简体中文\x00教学" + long_gap,
+            "scenes": [
+                {
+                    "type": "slide",
+                    "title": "从变化率出发\x00" + long_gap,
+                    "description": "用平均速度\x00引出瞬时变化率。" + long_gap,
+                    "key_points": [
+                        "平均变化率\x00" + long_gap,
+                        "  ",
+                        "趋近过程\ud800",
+                    ],
+                    "teaching_objective": "理解\x00极限。" + long_gap,
+                    "widget_outline": {"concept": "limit\x00"},
+                }
+            ],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["course_title"] == "极限与连续"
+    assert body["language_directive"] == "用简体中文教学"
+    scene = body["scenes"][0]
+    assert scene["title"] == "从变化率出发"
+    assert scene["description"] == "用平均速度引出瞬时变化率。"
+    assert scene["key_points"] == ["平均变化率", "趋近过程"]
+    assert scene["teaching_objective"] == "理解极限。"
+    assert scene["widget_outline"] == {"concept": "limit"}
+
+    fetched = await client.get(f"{API}/courses/{course_id}/outline", headers=headers)
+    assert fetched.status_code == 200
+    assert "\x00" not in json.dumps(fetched.json())

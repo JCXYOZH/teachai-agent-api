@@ -31,6 +31,7 @@
 - 大纲与课堂生成默认固定使用本地 `llama-local`（`Qwen3.6-35B-A3B`，读取 `LLAMA_BASE_URL` / `LLAMA_MODEL`）。
 - 只有在设置页勾选「使用当前模型」（即 `is_default: true`）并保存后，生成才会改用该 Provider；同一时间只有一家生效。
 - 只保存配置信息（不勾选）不影响生成，也不存在按配置顺序依次尝试其他厂商的兜底链。
+- 课堂「问老师」对话使用同一套解析（`resolve_generation_candidates`）：空回答只重试同一厂商一次；只有主通道为 `llama-local` 且连接失败或返回非 2xx 时，才对已保存配置单次回退。
 - 本地模型不可用（连接失败或非 2xx）时，会回退到用户最近保存且凭据完整的配置，仅尝试一次；仍失败则任务失败并提示。
 - 响应解析失败时不切换 Provider，同一 Provider 重试一次；请求里的 `model` 只临时覆盖模型名，不会自动挑选同一厂商的其他模型。
 
@@ -172,3 +173,11 @@ IMAGE_CLOUDFLARE_MODEL=@cf/black-forest-labs/flux-1-schnell
 $env:DASHSCOPE_API_KEY="sk-..."
 .\.venv\Scripts\python.exe scripts\check_image.py --provider all --out-dir .\image-smoke
 ```
+
+## 凭证加密与失效处理
+
+API Key 落库前用 Fernet 加密，密钥由 `PROVIDER_KEY_ENCRYPTION_SECRET` 派生；未设置时退化为 `JWT_SECRET`。
+
+- 生产环境建议单独设置 `PROVIDER_KEY_ENCRYPTION_SECRET`，避免轮换 `JWT_SECRET` 后旧数据不可解密。
+- 已保存的密钥解密失败时，`GET /providers` 不再返回 500：该条目标记 `api_key_readable=false`，凭据来源仍为 `user`，前端提示重新填写。
+- 需要真正调用模型时（连接测试、生成、旁白）才会返回 `422 PROVIDER_KEY_UNREADABLE`，提示用户重新保存 API Key。

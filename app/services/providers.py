@@ -1,3 +1,4 @@
+import logging
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -29,6 +30,8 @@ from app.services.provider_registry import (
 )
 from app.services.url_guard import validate_provider_base_url
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ProbeResult:
@@ -49,6 +52,7 @@ class ResolvedProvider:
     tts_base_url: Optional[str] = None
     tts_model: Optional[str] = None
     tts_voice: Optional[str] = None
+    credential_unreadable: bool = False
 
 
 def _secret_hint(secret: Optional[str]) -> Optional[str]:
@@ -59,6 +63,12 @@ def _secret_hint(secret: Optional[str]) -> Optional[str]:
 
 def _secret_last4(secret: str) -> Optional[str]:
     return secret[-4:] if len(secret) >= 8 else None
+
+
+def _hint_from_last4(last4: Optional[str]) -> Optional[str]:
+    if not last4:
+        return None
+    return f"****{last4}"
 
 
 def _qwen_tts_base_url(base_url: str) -> str:
@@ -326,12 +336,7 @@ class ProviderConfigService:
         resolved.base_url = await validate_provider_base_url(
             resolved.base_url, spec, self.settings
         )
-        if spec.requires_api_key and not resolved.api_key:
-            raise AppError(
-                422,
-                "PROVIDER_API_KEY_REQUIRED",
-                "This provider requires an API key",
-            )
+        self._ensure_api_key(resolved)
 
         started_at = time.perf_counter()
         if spec.protocol == "anthropic":
@@ -404,12 +409,7 @@ class ProviderConfigService:
         resolved.base_url = await validate_provider_base_url(
             resolved.base_url, spec, self.settings
         )
-        if spec.requires_api_key and not resolved.api_key:
-            raise AppError(
-                422,
-                "PROVIDER_API_KEY_REQUIRED",
-                "This provider requires an API key",
-            )
+        self._ensure_api_key(resolved)
         return resolved
 
     async def _resolve_fallback(self, owner: User) -> Optional[ResolvedProvider]:
@@ -480,12 +480,7 @@ class ProviderConfigService:
             resolved.tts_model = model
         if voice:
             resolved.tts_voice = voice
-        if spec.requires_api_key and not resolved.api_key:
-            raise AppError(
-                422,
-                "PROVIDER_API_KEY_REQUIRED",
-                "This provider requires an API key",
-            )
+        self._ensure_api_key(resolved)
         return resolved
 
     async def _configs_by_provider(self, owner_id: UUID) -> Dict[str, ProviderConfig]:
@@ -504,10 +499,26 @@ class ProviderConfigService:
             )
         )
 
+    def _ensure_api_key(self, resolved: ResolvedProvider) -> None:
+        if not resolved.spec.requires_api_key or resolved.api_key:
+            return
+        if resolved.credential_unreadable:
+            raise AppError(
+                422,
+                "PROVIDER_KEY_UNREADABLE",
+                "Stored API key could not be decrypted; re-enter it in provider settings",
+            )
+        raise AppError(
+            422,
+            "PROVIDER_API_KEY_REQUIRED",
+            "This provider requires an API key",
+        )
+
     def _provider_view(
         self, spec: ProviderSpec, config: Optional[ProviderConfig]
     ) -> ProviderView:
         resolved = self._resolve(spec, config)
+        has_stored_key = bool(config is not None and config.encrypted_api_key)
         return ProviderView(
             id=spec.id,
             label=spec.label,
@@ -519,9 +530,14 @@ class ProviderConfigService:
             supports_model_discovery=spec.supports_model_discovery,
             default_models=list(spec.default_models),
             configured=config is not None,
-            api_key_configured=resolved.api_key is not None,
-            api_key_hint=_secret_hint(resolved.api_key),
-            api_key_source=resolved.api_key_source,  # type: ignore[arg-type]
+            api_key_configured=has_stored_key or resolved.api_key is not None,
+            api_key_hint=(
+                _hint_from_last4(config.api_key_last4)
+                if has_stored_key and config is not None
+                else _secret_hint(resolved.api_key)
+            ),
+            api_key_source=("user" if has_stored_key else resolved.api_key_source),  # type: ignore[arg-type]
+            api_key_readable=not resolved.credential_unreadable,
             base_url=resolved.base_url,
             default_model=resolved.default_model,
             is_default=bool(config and config.is_default),
@@ -541,15 +557,17 @@ class ProviderConfigService:
         self, spec: ProviderSpec, config: Optional[ProviderConfig]
     ) -> ResolvedProvider:
         user_key: Optional[str] = None
+        credential_unreadable = False
         if config is not None and config.encrypted_api_key:
             try:
                 user_key = decrypt_secret(config.encrypted_api_key, self.settings)
-            except DecryptionError as exc:
-                raise AppError(
-                    500,
-                    "PROVIDER_KEY_DECRYPT_FAILED",
-                    "Stored provider credential could not be decrypted",
-                ) from exc
+            except DecryptionError:
+                credential_unreadable = True
+                logger.warning(
+                    "Stored API key for provider %s could not be decrypted; "
+                    "the owner must re-enter it",
+                    spec.id,
+                )
         env_key = self._environment_api_key(spec)
         api_key = user_key or env_key
         api_key_source = "user" if user_key else ("environment" if env_key else None)
@@ -602,6 +620,7 @@ class ProviderConfigService:
             tts_base_url=tts_base_url,
             tts_model=tts_model,
             tts_voice=tts_voice,
+            credential_unreadable=credential_unreadable,
         )
 
     def _environment_value(self, setting_name: Optional[str]) -> Optional[str]:

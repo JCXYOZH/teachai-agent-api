@@ -1,5 +1,6 @@
 import json
 from typing import Any, Dict, Tuple
+from uuid import UUID
 
 import httpx
 from httpx import AsyncClient
@@ -419,3 +420,48 @@ async def test_openai_probe_always_runs_chat_completion(monkeypatch: Any) -> Non
     assert result.model == "qwen3.8-omni-flash"
     assert result.models == ["qwen3.8-omni-flash"]
     assert paths[1].endswith("/chat/completions")
+
+
+async def _store_unreadable_key(user_id: str, provider_id: str) -> None:
+    async with AsyncSessionLocal() as session:
+        session.add(
+            ProviderConfig(
+                owner_id=UUID(user_id),
+                provider_id=provider_id,
+                encrypted_api_key="gAAAAAB-not-a-real-fernet-token",
+                api_key_last4="4321",
+            )
+        )
+        await session.commit()
+
+
+async def test_unreadable_stored_key_degrades_provider_listing(
+    client: AsyncClient,
+) -> None:
+    headers, user_id = await register_user(client, "unreadable-list@example.com")
+    await _store_unreadable_key(user_id, "openai")
+
+    response = await client.get(PROVIDER_PATH, headers=headers)
+
+    assert response.status_code == 200, response.text
+    providers = {item["id"]: item for item in response.json()}
+    openai = providers["openai"]
+    assert openai["api_key_configured"] is True
+    assert openai["api_key_source"] == "user"
+    assert openai["api_key_readable"] is False
+    assert openai["api_key_hint"] == "****4321"
+
+
+async def test_unreadable_stored_key_asks_for_reentry_before_use(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, user_id = await register_user(client, "unreadable-use@example.com")
+    monkeypatch.setattr(settings, "openai_api_key", None)
+    await _store_unreadable_key(user_id, "openai")
+
+    response = await client.post(
+        f"{PROVIDER_PATH}/openai/test", headers=headers, json={}
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "PROVIDER_KEY_UNREADABLE"

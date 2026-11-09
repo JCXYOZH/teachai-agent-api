@@ -4,14 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
-def _clean_text(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    normalized = value.strip()
-    if any(ord(character) < 32 and character not in "\n\t" for character in normalized):
-        raise ValueError("Text contains unsupported control characters")
-    return normalized or None
+from app.core.text import normalize_user_text_input
 
 
 class FolderCreate(BaseModel):
@@ -19,15 +12,10 @@ class FolderCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=120)
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
-    def validate_name(cls, value: str) -> str:
-        normalized = _clean_text(value)
-        if not normalized:
-            raise ValueError("Folder name must not be empty")
-        if "\n" in normalized or "\t" in normalized:
-            raise ValueError("Folder name must be a single line")
-        return normalized
+    def normalize_name_input(cls, value: Any) -> Any:
+        return normalize_user_text_input(value, single_line=True)
 
 
 class FolderUpdate(FolderCreate):
@@ -50,20 +38,20 @@ class CourseCreate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     folder_id: Optional[UUID] = None
 
-    @field_validator("title")
+    @field_validator("title", mode="before")
     @classmethod
-    def validate_title(cls, value: str) -> str:
-        normalized = _clean_text(value)
-        if not normalized:
-            raise ValueError("Course title must not be empty")
-        if "\n" in normalized or "\t" in normalized:
-            raise ValueError("Course title must be a single line")
-        return normalized
+    def normalize_title_input(cls, value: Any) -> Any:
+        return normalize_user_text_input(value, single_line=True)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description_input(cls, value: Any) -> Any:
+        return normalize_user_text_input(value)
 
     @field_validator("description")
     @classmethod
-    def normalize_description(cls, value: Optional[str]) -> Optional[str]:
-        return _clean_text(value)
+    def empty_description_to_none(cls, value: Optional[str]) -> Optional[str]:
+        return value or None
 
 
 class CourseUpdate(BaseModel):
@@ -73,22 +61,20 @@ class CourseUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     folder_id: Optional[UUID] = None
 
-    @field_validator("title")
+    @field_validator("title", mode="before")
     @classmethod
-    def validate_title(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        normalized = _clean_text(value)
-        if not normalized:
-            raise ValueError("Course title must not be empty")
-        if "\n" in normalized or "\t" in normalized:
-            raise ValueError("Course title must be a single line")
-        return normalized
+    def normalize_title_input(cls, value: Any) -> Any:
+        return normalize_user_text_input(value, single_line=True)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description_input(cls, value: Any) -> Any:
+        return normalize_user_text_input(value)
 
     @field_validator("description")
     @classmethod
-    def normalize_description(cls, value: Optional[str]) -> Optional[str]:
-        return _clean_text(value)
+    def empty_description_to_none(cls, value: Optional[str]) -> Optional[str]:
+        return value or None
 
 
 class CourseResponse(BaseModel):
@@ -117,15 +103,15 @@ class AssetUpdate(BaseModel):
     course_id: Optional[UUID] = None
     folder_id: Optional[UUID] = None
 
+    @field_validator("filename", mode="before")
+    @classmethod
+    def normalize_filename_input(cls, value: Any) -> Any:
+        return normalize_user_text_input(value, single_line=True)
+
     @field_validator("filename")
     @classmethod
-    def normalize_filename(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        normalized = _clean_text(value)
-        if not normalized:
-            raise ValueError("File name must not be empty")
-        return normalized
+    def empty_filename_to_none(cls, value: Optional[str]) -> Optional[str]:
+        return value or None
 
 
 class AssetResponse(BaseModel):

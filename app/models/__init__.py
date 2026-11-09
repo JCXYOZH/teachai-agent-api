@@ -1,5 +1,6 @@
 from app.models.asset import Asset, AssetExtraction
 from app.models.auth_session import AuthSession
+from app.models.chat import CourseChatMessage, CourseChatSession
 from app.models.classroom import (
     ClassroomResponse,
     CourseScene,
@@ -22,6 +23,8 @@ __all__ = [
     "CourseScene",
     "CourseStage",
     "Course",
+    "CourseChatMessage",
+    "CourseChatSession",
     "EmailVerification",
     "Folder",
     "CourseOutline",

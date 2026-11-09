@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.core.text import sanitize_text
 from app.core.time import utcnow
 from app.models.asset import Asset, AssetExtraction
 from app.models.course import Course
@@ -103,6 +104,9 @@ class LibraryService:
         ]
 
     async def create_folder(self, owner: User, name: str) -> FolderResponse:
+        name = sanitize_text(name).strip()
+        if not name:
+            raise AppError(422, "FOLDER_NAME_INVALID", "Folder name must not be empty")
         name_key = name.casefold()
         await self._ensure_folder_name_available(owner.id, name_key)
         folder = Folder(owner_id=owner.id, name=name, name_key=name_key)
@@ -124,6 +128,9 @@ class LibraryService:
 
     async def update_folder(self, owner: User, folder_id: UUID, name: str) -> FolderResponse:
         folder = await self._get_folder(owner.id, folder_id)
+        name = sanitize_text(name).strip()
+        if not name:
+            raise AppError(422, "FOLDER_NAME_INVALID", "Folder name must not be empty")
         name_key = name.casefold()
         await self._ensure_folder_name_available(owner.id, name_key, folder_id)
         folder.name = name
@@ -235,6 +242,10 @@ class LibraryService:
         folder_id: Optional[UUID],
     ) -> CourseResponse:
         folder_name = await self._validate_folder_reference(owner.id, folder_id)
+        title = sanitize_text(title).strip()
+        if not title:
+            raise AppError(422, "COURSE_TITLE_INVALID", "Course title must not be empty")
+        description = sanitize_text(description) if description is not None else None
         course = Course(
             owner_id=owner.id,
             title=title,
@@ -254,9 +265,17 @@ class LibraryService:
     ) -> CourseResponse:
         course = await self._get_course(owner.id, course_id)
         if "title" in changes and changes["title"] is not None:
-            course.title = changes["title"]
+            title = sanitize_text(changes["title"]).strip()
+            if not title:
+                raise AppError(
+                    422, "COURSE_TITLE_INVALID", "Course title must not be empty"
+                )
+            course.title = title
         if "description" in changes:
-            course.description = changes["description"]
+            description = changes["description"]
+            course.description = (
+                sanitize_text(description) if description is not None else None
+            )
         if "folder_id" in changes:
             await self._validate_folder_reference(owner.id, changes["folder_id"])
             course.folder_id = changes["folder_id"]
@@ -523,6 +542,9 @@ class LibraryService:
         return asset, path
 
     async def search(self, owner: User, query: str, limit: int) -> SearchResponse:
+        query = sanitize_text(query).strip()
+        if not query:
+            return SearchResponse(query="", total=0, courses=[], assets=[])
         courses = await self.list_courses(owner, query, None, limit, 0)
         assets = await self.list_assets(owner, query, None, None, limit, 0)
         course_hits = [

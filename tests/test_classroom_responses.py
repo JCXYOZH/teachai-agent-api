@@ -5,6 +5,8 @@ from httpx import AsyncClient
 from support import register_and_verify
 
 from app.core.config import settings
+from app.schemas.classroom import ClassroomAnswerItem
+from app.services.classroom_responses import ClassroomResponseService
 from app.services.classrooms import ClassroomService
 
 API = settings.api_v1_prefix
@@ -254,3 +256,30 @@ async def test_responses_are_owner_scoped_and_validated(
         endpoint, headers=headers, json={"responses": []}
     )
     assert empty.status_code == 422
+
+
+
+def test_grade_cleans_nul_bytes_from_answers() -> None:
+    service = ClassroomResponseService(None, settings)  # type: ignore[arg-type]
+
+    short_answer = ClassroomAnswerItem(
+        kind="question", target_id="q1", answer="a\x00b"
+    )
+    answer, score, max_score, correct = service._grade(
+        short_answer, {"type": "short_answer", "answer": []}
+    )
+    assert answer == {"text": "ab"}
+    assert score is None
+    assert max_score == 0
+    assert correct is None
+
+    choice = ClassroomAnswerItem(
+        kind="question", target_id="q2", answer=["A\x00"]
+    )
+    answer, score, max_score, correct = service._grade(
+        choice, {"type": "single", "answer": ["A"]}
+    )
+    assert answer == {"selected": ["A"]}
+    assert score == 1
+    assert max_score == 1
+    assert correct is True
