@@ -100,6 +100,8 @@ async def send_registration_code(
 ) -> RegistrationCodeResponse:
     pending = await AuthService(db, settings).send_registration_code(payload)
     return RegistrationCodeResponse(
+        channel=pending.channel,  # type: ignore[arg-type]
+        target=pending.target,
         email=pending.email,
         expires_in=pending.expires_in,
         resend_after=pending.resend_after,

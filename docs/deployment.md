@@ -78,7 +78,7 @@ sudo chown -R 10001:10001 /data/TeachAIAgent      # 每当迁移开发测试数�
 ```bash
 cd /opt/teachai/teachai-agent-api
 cp .env.production.example .env.production
-# 填写 DATABASE_URL 密码、JWT_SECRET、AGENTSEND_API_KEY
+# 填写 DATABASE_URL 密码、JWT_SECRET、AGENTSEND_API_KEY、SPUG_URL
 chmod 600 .env.production
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml logs -f api
@@ -95,7 +95,9 @@ docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 ```
 
 - 镜像内含 `HEALTHCHECK`，探测 http://127.0.0.1:65534/api/v1/health
-- `APP_ENV=production` 时启动会强制校验：`JWT_SECRET` 非默认且至少 32 字符、`EMAIL_DELIVERY=agentsend`、`AGENTSEND_BASE_URL` 为 HTTPS、`ASSET_STORAGE_ROOT` 为绝对路径。任一不满足即启动失败，属预期行为。
+- `APP_ENV=production` 时启动会强制校验：`JWT_SECRET` 非默认且至少 32 字符、`EMAIL_DELIVERY=agentsend`、`AGENTSEND_BASE_URL` 为 HTTPS、`SMS_DELIVERY=spug`、`SPUG_URL` 为 HTTPS、`ASSET_STORAGE_ROOT` 为绝对路径。任一不满足即启动失败，属预期行为。
+
+- 短信注册验证码走 push.spug.cc 模板推送：`SPUG_URL` 形如 `https://push.spug.cc/send/<模板ID>`，模板 ID 属于凭证，只放 `.env.production`（`chmod 600`），不要提交到 Git。修改模板或更换号码后先手工 `curl` 一次确认返回 200。
 - 生产环境的 Provider Base URL 必须是 HTTPS；本地 llama.cpp 走明文时，需要在 `.env.production` 里显式放行，否则大纲/课堂生成返回 `422 INSECURE_PROVIDER_URL`：
 
 ```text

@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     agentsend_inbox_id: str = ""
     agentsend_base_url: str = "https://api.agentsend.io"
     agentsend_timeout_seconds: float = 20.0
+    # Registration SMS verification. Use "spug" outside development.
+    sms_delivery: str = "log"
+    spug_url: str = ""
+    spug_timeout_seconds: float = 10.0
     verification_code_ttl_seconds: int = 600
     verification_resend_seconds: int = 60
     verification_max_attempts: int = 5
@@ -126,6 +130,20 @@ class Settings(BaseSettings):
             raise ValueError("AGENTSEND_BASE_URL must use HTTPS in production")
         if not 1 <= self.agentsend_timeout_seconds <= 120:
             raise ValueError("AGENTSEND_TIMEOUT_SECONDS must be between 1 and 120")
+        if self.sms_delivery not in {"memory", "log", "spug"}:
+            raise ValueError("SMS_DELIVERY must be memory, log or spug")
+        if self.app_env == "production" and self.sms_delivery != "spug":
+            raise ValueError("SMS_DELIVERY must be spug in production")
+        if self.sms_delivery == "spug":
+            if not self.spug_url.startswith(("http://", "https://")):
+                raise ValueError("SPUG_URL must be an HTTP(S) URL")
+            if (
+                self.app_env == "production"
+                and not self.spug_url.startswith("https://")
+            ):
+                raise ValueError("SPUG_URL must use HTTPS in production")
+        if not 1 <= self.spug_timeout_seconds <= 120:
+            raise ValueError("SPUG_TIMEOUT_SECONDS must be between 1 and 120")
         if not 60 <= self.verification_code_ttl_seconds <= 3600:
             raise ValueError("VERIFICATION_CODE_TTL_SECONDS must be between 60 and 3600")
         if not 10 <= self.verification_resend_seconds <= 600:

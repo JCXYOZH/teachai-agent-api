@@ -12,6 +12,8 @@ def production_settings(**overrides: object) -> Settings:
         jwt_secret="test-only-jwt-secret-7f3c1a9e5b2d8f4c6a0e1d3b7c9f2a5e",
         email_delivery="agentsend",
         agentsend_api_key="ask_test",
+        sms_delivery="spug",
+        spug_url="https://push.spug.cc/send/test-template",
     )
     return base.model_copy(update=overrides)
 

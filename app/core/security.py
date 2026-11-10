@@ -1,8 +1,9 @@
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 import jwt
@@ -24,6 +25,34 @@ class TokenError(Exception):
 
 def normalize_email(email: str) -> str:
     return email.strip().lower()
+
+CHINA_MOBILE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
+
+
+def normalize_phone(phone: str) -> str:
+    digits = re.sub(r"[\s\-()]", "", phone.strip())
+    if digits.startswith("+86"):
+        digits = digits[3:]
+    elif digits.startswith("86") and len(digits) == 13:
+        digits = digits[2:]
+    if not CHINA_MOBILE_PATTERN.match(digits):
+        raise ValueError("Phone must be a mainland China mobile number")
+    return digits
+
+
+def normalize_phone_or_none(value: str) -> Optional[str]:
+    try:
+        return normalize_phone(value)
+    except ValueError:
+        return None
+
+
+def mask_phone(phone: str) -> str:
+    if not phone:
+        return phone
+    if "*" in phone or len(phone) < 7:
+        return phone
+    return f"{phone[:3]}****{phone[-4:]}"
 
 
 def hash_password(password: str) -> str:

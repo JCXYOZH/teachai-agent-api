@@ -1,9 +1,9 @@
 import hmac
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, or_, select
@@ -19,7 +19,10 @@ from app.core.security import (
     hash_csrf_token,
     hash_password,
     hash_refresh_token,
+    mask_phone,
     normalize_email,
+    normalize_phone,
+    normalize_phone_or_none,
     secure_compare,
     verify_password,
 )
@@ -27,6 +30,7 @@ from app.core.time import utcnow
 from app.db.session import AsyncSessionLocal
 from app.models.auth_session import AuthSession
 from app.models.email_verification import EmailVerification
+from app.models.phone_verification import PhoneVerification
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
@@ -34,6 +38,7 @@ from app.schemas.auth import (
     SendRegistrationCodeRequest,
 )
 from app.services.email import EmailDeliveryError, get_email_sender
+from app.services.sms import SmsDeliveryError, get_sms_sender
 
 DUMMY_PASSWORD_HASH = hash_password("teachai-dummy-password-0")
 
@@ -49,7 +54,9 @@ class IssuedSession:
 
 @dataclass
 class PendingRegistration:
-    email: str
+    channel: str
+    target: str
+    email: Optional[str]
     expires_in: int
     resend_after: int
 
@@ -71,13 +78,33 @@ class AuthService:
     async def send_registration_code(
         self, payload: SendRegistrationCodeRequest
     ) -> PendingRegistration:
-        email = normalize_email(str(payload.email))
+        if payload.phone is not None:
+            return await self._send_phone_code(payload.phone)
+        return await self._send_email_code(normalize_email(str(payload.email)))
+
+    async def _send_email_code(self, email: str) -> PendingRegistration:
         await self._ensure_email_available(email)
         pending, code = await self._upsert_pending(email)
         await self._deliver_code(pending, code)
         return self._pending_response(pending)
 
+    async def _send_phone_code(self, phone: str) -> PendingRegistration:
+        await self._ensure_phone_available(phone)
+        pending, code = await self._upsert_phone_pending(phone)
+        await self._deliver_sms_code(pending, code)
+        return self._phone_pending_response(pending)
+
     async def register(
+        self,
+        payload: RegisterRequest,
+        user_agent: Optional[str],
+        ip_address: Optional[str],
+    ) -> IssuedSession:
+        if payload.phone is not None:
+            return await self._register_with_phone(payload, user_agent, ip_address)
+        return await self._register_with_email(payload, user_agent, ip_address)
+
+    async def _register_with_email(
         self,
         payload: RegisterRequest,
         user_agent: Optional[str],
@@ -90,32 +117,8 @@ class AuthService:
             await self._raise_already_registered_or_missing(email)
         assert pending is not None
 
-        if pending.expires_at <= now:
-            raise AppError(
-                400,
-                "VERIFICATION_CODE_EXPIRED",
-                "The verification code has expired",
-            )
-        if pending.attempts >= self.settings.verification_max_attempts:
-            raise AppError(
-                429,
-                "VERIFICATION_ATTEMPTS_EXCEEDED",
-                "Too many invalid verification attempts",
-            )
-
-        expected = hash_verification_code(self.settings.jwt_secret, email, str(payload.code))
-        if not hmac.compare_digest(expected, pending.code_hash):
-            pending.attempts += 1
-            await self.db.commit()
-            remaining = max(
-                0, self.settings.verification_max_attempts - pending.attempts
-            )
-            raise AppError(
-                400,
-                "INVALID_VERIFICATION_CODE",
-                "The verification code is incorrect",
-                details={"attempts_remaining": remaining},
-            )
+        self._ensure_pending_usable(pending, now)
+        await self._verify_pending_code(pending, email, str(payload.code))
 
         existing = await self.db.scalar(select(User).where(User.email == email))
         if existing is not None:
@@ -146,6 +149,86 @@ class AuthService:
         await self.db.commit()
         return issued
 
+    async def _register_with_phone(
+        self,
+        payload: RegisterRequest,
+        user_agent: Optional[str],
+        ip_address: Optional[str],
+    ) -> IssuedSession:
+        phone = normalize_phone(str(payload.phone))
+        pending = await self._pending_phone_for_update(phone)
+        now = utcnow()
+        if pending is None:
+            await self._raise_phone_registered_or_missing(phone)
+        assert pending is not None
+
+        self._ensure_pending_usable(pending, now)
+        await self._verify_pending_code(pending, phone, str(payload.code))
+
+        existing = await self.db.scalar(select(User).where(User.phone == phone))
+        if existing is not None:
+            pending.consumed_at = now
+            await self.db.commit()
+            raise AppError(
+                409,
+                "PHONE_ALREADY_REGISTERED",
+                "An account with this phone number already exists",
+            )
+
+        password_hash = await run_in_threadpool(hash_password, payload.password)
+        display_name = payload.display_name or f"用户{phone[-4:]}"
+        user = User(phone=phone, password_hash=password_hash, display_name=display_name)
+        self.db.add(user)
+        try:
+            await self.db.flush()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise AppError(
+                409,
+                "PHONE_ALREADY_REGISTERED",
+                "An account with this phone number already exists",
+            ) from exc
+
+        pending.consumed_at = now
+        issued = await self._issue_session(user, user_agent, ip_address)
+        await self.db.commit()
+        return issued
+
+    def _ensure_pending_usable(
+        self, pending: Union[EmailVerification, PhoneVerification], now: datetime
+    ) -> None:
+        if pending.expires_at <= now:
+            raise AppError(
+                400,
+                "VERIFICATION_CODE_EXPIRED",
+                "The verification code has expired",
+            )
+        if pending.attempts >= self.settings.verification_max_attempts:
+            raise AppError(
+                429,
+                "VERIFICATION_ATTEMPTS_EXCEEDED",
+                "Too many invalid verification attempts",
+            )
+
+    async def _verify_pending_code(
+        self,
+        pending: Union[EmailVerification, PhoneVerification],
+        identifier: str,
+        code: str,
+    ) -> None:
+        expected = hash_verification_code(self.settings.jwt_secret, identifier, code)
+        if hmac.compare_digest(expected, pending.code_hash):
+            return
+        pending.attempts += 1
+        await self.db.commit()
+        remaining = max(0, self.settings.verification_max_attempts - pending.attempts)
+        raise AppError(
+            400,
+            "INVALID_VERIFICATION_CODE",
+            "The verification code is incorrect",
+            details={"attempts_remaining": remaining},
+        )
+
     async def _ensure_email_available(self, email: str) -> None:
         existing = await self.db.scalar(select(User).where(User.email == email))
         if existing is not None:
@@ -153,6 +236,15 @@ class AuthService:
                 409,
                 "EMAIL_ALREADY_REGISTERED",
                 "An account with this email already exists",
+            )
+
+    async def _ensure_phone_available(self, phone: str) -> None:
+        existing = await self.db.scalar(select(User).where(User.phone == phone))
+        if existing is not None:
+            raise AppError(
+                409,
+                "PHONE_ALREADY_REGISTERED",
+                "An account with this phone number already exists",
             )
 
     async def _raise_already_registered_or_missing(self, email: str) -> None:
@@ -169,6 +261,20 @@ class AuthService:
             "The verification code is missing or no longer valid",
         )
 
+    async def _raise_phone_registered_or_missing(self, phone: str) -> None:
+        existing = await self.db.scalar(select(User).where(User.phone == phone))
+        if existing is not None:
+            raise AppError(
+                409,
+                "PHONE_ALREADY_REGISTERED",
+                "An account with this phone number already exists",
+            )
+        raise AppError(
+            400,
+            "PHONE_VERIFICATION_NOT_FOUND",
+            "The verification code is missing or no longer valid",
+        )
+
     async def _pending_for_update(self, email: str) -> Optional[EmailVerification]:
         return await self.db.scalar(
             select(EmailVerification)
@@ -177,6 +283,20 @@ class AuthService:
                 EmailVerification.consumed_at.is_(None),
             )
             .order_by(EmailVerification.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+
+    async def _pending_phone_for_update(
+        self, phone: str
+    ) -> Optional[PhoneVerification]:
+        return await self.db.scalar(
+            select(PhoneVerification)
+            .where(
+                PhoneVerification.phone == phone,
+                PhoneVerification.consumed_at.is_(None),
+            )
+            .order_by(PhoneVerification.created_at.desc())
             .limit(1)
             .with_for_update()
         )
@@ -194,7 +314,7 @@ class AuthService:
             )
             self.db.add(pending)
         code = generate_verification_code()
-        self._apply_code(pending, code)
+        self._apply_code(pending, code, pending.email)
         try:
             await self.db.commit()
         except IntegrityError as exc:
@@ -206,10 +326,42 @@ class AuthService:
             ) from exc
         return pending, code
 
-    def _apply_code(self, pending: EmailVerification, code: str) -> None:
+    async def _upsert_phone_pending(
+        self, phone: str
+    ) -> Tuple[PhoneVerification, str]:
+        pending = await self._pending_phone_for_update(phone)
+        if pending is not None:
+            self._enforce_resend_cooldown(pending)
+        else:
+            pending = PhoneVerification(
+                phone=phone,
+                code_hash="",
+                expires_at=utcnow(),
+                last_sent_at=utcnow(),
+            )
+            self.db.add(pending)
+        code = generate_verification_code()
+        self._apply_code(pending, code, phone)
+        try:
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise AppError(
+                409,
+                "REGISTRATION_ALREADY_PENDING",
+                "A verification code was just sent for this phone number",
+            ) from exc
+        return pending, code
+
+    def _apply_code(
+        self,
+        pending: Union[EmailVerification, PhoneVerification],
+        code: str,
+        identifier: str,
+    ) -> None:
         now = utcnow()
         pending.code_hash = hash_verification_code(
-            self.settings.jwt_secret, pending.email, code
+            self.settings.jwt_secret, identifier, code
         )
         pending.expires_at = now + timedelta(
             seconds=self.settings.verification_code_ttl_seconds
@@ -217,7 +369,9 @@ class AuthService:
         pending.last_sent_at = now
         pending.attempts = 0
 
-    def _enforce_resend_cooldown(self, pending: EmailVerification) -> None:
+    def _enforce_resend_cooldown(
+        self, pending: Union[EmailVerification, PhoneVerification]
+    ) -> None:
         next_allowed = pending.last_sent_at + timedelta(
             seconds=self.settings.verification_resend_seconds
         )
@@ -250,9 +404,43 @@ class AuthService:
                 "Verification email could not be sent, please try again later",
             ) from exc
 
+    async def _deliver_sms_code(
+        self, pending: PhoneVerification, code: str
+    ) -> None:
+        try:
+            await get_sms_sender(self.settings).send_verification_code(
+                to=pending.phone,
+                code=code,
+                ttl_seconds=self.settings.verification_code_ttl_seconds,
+            )
+        except SmsDeliveryError as exc:
+            pending.expires_at = utcnow()
+            pending.last_sent_at = utcnow() - timedelta(
+                seconds=self.settings.verification_resend_seconds
+            )
+            await self.db.commit()
+            raise AppError(
+                503,
+                "SMS_DELIVERY_UNAVAILABLE",
+                "Verification SMS could not be sent, please try again later",
+            ) from exc
+
     def _pending_response(self, pending: EmailVerification) -> PendingRegistration:
         return PendingRegistration(
+            channel="email",
+            target=pending.email,
             email=pending.email,
+            expires_in=self.settings.verification_code_ttl_seconds,
+            resend_after=self.settings.verification_resend_seconds,
+        )
+
+    def _phone_pending_response(
+        self, pending: PhoneVerification
+    ) -> PendingRegistration:
+        return PendingRegistration(
+            channel="phone",
+            target=mask_phone(pending.phone),
+            email=None,
             expires_in=self.settings.verification_code_ttl_seconds,
             resend_after=self.settings.verification_resend_seconds,
         )
@@ -263,8 +451,14 @@ class AuthService:
         user_agent: Optional[str],
         ip_address: Optional[str],
     ) -> IssuedSession:
-        email = normalize_email(str(payload.email))
-        user = await self.db.scalar(select(User).where(User.email == email))
+        identifier = payload.identifier
+        phone = normalize_phone_or_none(identifier)
+        if phone is not None:
+            user = await self.db.scalar(select(User).where(User.phone == phone))
+        else:
+            user = await self.db.scalar(
+                select(User).where(User.email == normalize_email(identifier))
+            )
 
         if user is None:
             await run_in_threadpool(verify_password, payload.password, DUMMY_PASSWORD_HASH)
@@ -370,13 +564,17 @@ class AuthService:
 
     @staticmethod
     def _invalid_credentials() -> AppError:
-        return AppError(401, "INVALID_CREDENTIALS", "Email or password is incorrect")
+        return AppError(
+            401,
+            "INVALID_CREDENTIALS",
+            "Email, phone number or password is incorrect",
+        )
 
 
 async def purge_stale_verifications() -> int:
     cutoff = utcnow() - timedelta(days=1)
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
+        email_result = await db.execute(
             delete(EmailVerification).where(
                 or_(
                     EmailVerification.consumed_at.is_not(None),
@@ -384,5 +582,15 @@ async def purge_stale_verifications() -> int:
                 )
             )
         )
+        phone_result = await db.execute(
+            delete(PhoneVerification).where(
+                or_(
+                    PhoneVerification.consumed_at.is_not(None),
+                    PhoneVerification.expires_at < cutoff,
+                )
+            )
+        )
         await db.commit()
-        return int(getattr(result, "rowcount", 0) or 0)
+        return int(getattr(email_result, "rowcount", 0) or 0) + int(
+            getattr(phone_result, "rowcount", 0) or 0
+        )

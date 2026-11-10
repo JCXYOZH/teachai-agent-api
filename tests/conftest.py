@@ -23,12 +23,14 @@ os.environ['JWT_SECRET'] = 'test-only-jwt-secret-7f3c1a9e5b2d8f4c6a0e1d3b7c9f2a5
 os.environ['COOKIE_SECURE'] = 'false'
 os.environ['LOG_LEVEL'] = 'WARNING'
 os.environ['EMAIL_DELIVERY'] = 'memory'
+os.environ['SMS_DELIVERY'] = 'memory'
 TEST_ASSET_ROOT = Path(tempfile.mkdtemp(prefix='teachai-test-assets-'))
 os.environ['ASSET_STORAGE_ROOT'] = str(TEST_ASSET_ROOT)
 
 from app.db.session import engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.email import clear_memory_outbox  # noqa: E402
+from app.services.sms import clear_memory_outbox as clear_sms_outbox  # noqa: E402
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -41,6 +43,7 @@ def migrate_database() -> None:
 @pytest.fixture(autouse=True)
 async def clean_database(migrate_database) -> None:
     clear_memory_outbox()
+    clear_sms_outbox()
     shutil.rmtree(str(TEST_ASSET_ROOT), ignore_errors=True)
     TEST_ASSET_ROOT.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as connection:
@@ -48,7 +51,7 @@ async def clean_database(migrate_database) -> None:
             text(
                 'TRUNCATE TABLE media_assets, generation_jobs, course_scenes, course_stages, '
                 'course_outlines, asset_extractions, assets, courses, folders, '
-                'provider_configs, auth_sessions, email_verifications, users '
+                'provider_configs, auth_sessions, email_verifications, phone_verifications, users '
                 'RESTART IDENTITY CASCADE'
             )
         )
