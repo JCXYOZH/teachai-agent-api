@@ -293,6 +293,7 @@ class ClassroomService:
                     user_prompt=user_prompt,
                     timeout=timeout,
                     max_tokens=CLASSROOM_MAX_TOKENS,
+                    provider_id=resolved.spec.id,
                 )
             return await call_openai_compatible(
                 base_url=resolved.base_url,
@@ -304,6 +305,7 @@ class ClassroomService:
                 max_tokens=CLASSROOM_MAX_TOKENS,
                 text_only=text_only,
                 disable_thinking=resolved.spec.supports_thinking_control,
+                provider_id=resolved.spec.id,
             )
         except LLMTimeoutError as exc:
             raise AppError(

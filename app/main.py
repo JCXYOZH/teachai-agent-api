@@ -21,6 +21,7 @@ from app.api.routes import (
     outlines,
     providers,
 )
+from app.core import metrics
 from app.core.config import settings
 from app.core.docs import swagger_ui_html
 from app.core.errors import install_error_handlers
@@ -78,6 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     configure_logging(settings.log_level)
+    metrics.configure(settings.metrics_snapshot_seconds)
     openapi_url = f"{settings.api_v1_prefix}/openapi.json"
     app = FastAPI(
         title=settings.app_name,

@@ -246,6 +246,7 @@ class ChatService:
                 timeout=timeout,
                 max_tokens=self.settings.chat_max_tokens,
                 temperature=0.3,
+                provider_id=resolved.spec.id,
             )
         return await call_openai_compatible(
             base_url=resolved.base_url,
@@ -258,6 +259,7 @@ class ChatService:
             temperature=0.3,
             text_only=text_only,
             disable_thinking=resolved.spec.supports_thinking_control,
+            provider_id=resolved.spec.id,
         )
 
     async def _get_course(self, owner_id: UUID, course_id: UUID) -> Course:

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.core.metrics import record_llm_call
 from app.core.text import sanitize_json, sanitize_text
 from app.models.classroom import GenerationJob
 from app.models.course import Course
@@ -310,11 +312,30 @@ class OutlineService:
         system_prompt: str,
         user_prompt: str,
     ) -> str:
-        if resolved.spec.protocol == "anthropic":
-            return await self._call_anthropic(resolved, system_prompt, user_prompt)
-        return await self._call_openai_compatible(
-            resolved, system_prompt, user_prompt
-        )
+        started = time.perf_counter()
+        outcome = "error"
+        try:
+            if resolved.spec.protocol == "anthropic":
+                text = await self._call_anthropic(
+                    resolved, system_prompt, user_prompt
+                )
+            else:
+                text = await self._call_openai_compatible(
+                    resolved, system_prompt, user_prompt
+                )
+            outcome = "ok"
+            return text
+        except AppError as exc:
+            if exc.code == "OUTLINE_GENERATION_TIMEOUT":
+                outcome = "timeout"
+            raise
+        finally:
+            record_llm_call(
+                resolved.spec.id,
+                resolved.default_model,
+                outcome,
+                (time.perf_counter() - started) * 1000,
+            )
 
     async def _call_openai_compatible(
         self,

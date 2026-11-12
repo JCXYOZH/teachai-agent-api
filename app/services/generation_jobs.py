@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
+from app.core.metrics import record_generation_job
 from app.core.time import utcnow
 from app.db.session import AsyncSessionLocal
 from app.models.classroom import GenerationJob
@@ -137,6 +138,20 @@ async def mark_progress(
     await db.commit()
 
 
+def _record_job_outcome(job: GenerationJob, outcome: str) -> None:
+    finished_at = job.completed_at or utcnow()
+    started_at = job.started_at or job.created_at or finished_at
+    duration_ms = max(0.0, (finished_at - started_at).total_seconds() * 1000)
+    logger.info(
+        "generation_job_finished job_id=%s kind=%s outcome=%s duration_ms=%.1f",
+        job.id,
+        job.kind,
+        outcome,
+        duration_ms,
+    )
+    record_generation_job(job.kind, outcome, duration_ms)
+
+
 async def complete_job(
     db: AsyncSession,
     job_id: UUID,
@@ -160,6 +175,7 @@ async def complete_job(
     job.message = message
     job.completed_at = utcnow()
     await db.commit()
+    _record_job_outcome(job, "ok")
 
 
 async def fail_job(
@@ -174,6 +190,7 @@ async def fail_job(
     job.error_message = error_message[:2000]
     job.completed_at = utcnow()
     await db.commit()
+    _record_job_outcome(job, "failed")
 
 
 async def recover_interrupted_jobs() -> int:

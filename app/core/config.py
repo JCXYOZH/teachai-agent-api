@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     log_level: str = "INFO"
+    metrics_snapshot_seconds: int = 300
     trust_proxy_headers: bool = False
     cookie_secure: bool = False
     cookie_domain: Optional[str] = None
@@ -159,6 +160,8 @@ class Settings(BaseSettings):
             raise ValueError("SMS_IP_LIMIT_PER_HOUR must be between 1 and 500")
         if not 1 <= self.sms_target_limit_per_hour <= 100:
             raise ValueError("SMS_TARGET_LIMIT_PER_HOUR must be between 1 and 100")
+        if not 0 <= self.metrics_snapshot_seconds <= 86400:
+            raise ValueError("METRICS_SNAPSHOT_SECONDS must be between 0 and 86400")
         if self.access_token_minutes < 1 or self.access_token_minutes > 1440:
             raise ValueError("ACCESS_TOKEN_MINUTES must be between 1 and 1440")
         if self.refresh_token_days < 1 or self.refresh_token_days > 365:

@@ -252,3 +252,4 @@ docker compose -f docker-compose.prod.yml ps
 - 容器：`docker compose -f docker-compose.prod.yml logs --tail 200 api`，json-file 驱动已限制为 10 MB × 5。
 - Nginx：`/usr/local/nginx/logs/access.log`、`error.log`。
 - 后端每个请求都有 `request_id`，可与 `app.core.middleware` 日志对应。
+- 模型调用与生成任务的耗时/失败率由 `app/core/metrics.py` 在进程内计数：每次调用写一条 `llm_call_completed provider=... model=... outcome=ok|empty|timeout|error duration_ms=...`，每次任务结束写一条 `generation_job_finished job_id=... kind=... outcome=... duration_ms=...`；并按 `METRICS_SNAPSHOT_SECONDS`（默认 300 秒，0 关闭）输出聚合行 `metrics_snapshot group=llm|generation_job key=... calls=... failures=... failure_rate=... avg_ms=... max_ms=...`。计数随进程重启清零，副本之间不聚合，跨实例统计按日志行以 `key` 分组。
