@@ -98,6 +98,7 @@ docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 - `APP_ENV=production` 时启动会强制校验：`JWT_SECRET` 非默认且至少 32 字符、`EMAIL_DELIVERY=agentsend`、`AGENTSEND_BASE_URL` 为 HTTPS、`SMS_DELIVERY=spug`、`SPUG_URL` 为 HTTPS、`ASSET_STORAGE_ROOT` 为绝对路径。任一不满足即启动失败，属预期行为。
 
 - 短信注册验证码走 push.spug.cc 模板推送：`SPUG_URL` 形如 `https://push.spug.cc/send/<模板ID>`，模板 ID 属于凭证，只放 `.env.production`（`chmod 600`），不要提交到 Git。修改模板或更换号码后先手工 `curl` 一次确认返回 200。
+- 短信发送阈值可在 `.env.production` 调整：`SMS_IP_LIMIT_PER_MINUTE`（默认 3）、`SMS_IP_LIMIT_PER_HOUR`（默认 10）、`SMS_TARGET_LIMIT_PER_HOUR`（默认 5）；超限返回 `429 SMS_SEND_RATE_LIMITED`，前端会自动进入重发倒计时。
 - 生产环境的 Provider Base URL 必须是 HTTPS；本地 llama.cpp 走明文时，需要在 `.env.production` 里显式放行，否则大纲/课堂生成返回 `422 INSECURE_PROVIDER_URL`：
 
 ```text

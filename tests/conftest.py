@@ -51,7 +51,8 @@ async def clean_database(migrate_database) -> None:
             text(
                 'TRUNCATE TABLE media_assets, generation_jobs, course_scenes, course_stages, '
                 'course_outlines, asset_extractions, assets, courses, folders, '
-                'provider_configs, auth_sessions, email_verifications, phone_verifications, users '
+                'provider_configs, auth_sessions, email_verifications, phone_verifications, '
+                'verification_send_logs, users '
                 'RESTART IDENTITY CASCADE'
             )
         )

@@ -120,6 +120,9 @@ x-api-key: <AGENTSEND_API_KEY>
 | `SMS_DELIVERY` | `log` | `memory`（测试）、`log`（开发，验证码写日志）、`spug`（真实短信） |
 | `SPUG_URL` | 空 | push.spug.cc 推送模板地址，`spug` 模式必填；生产必须 HTTPS |
 | `SPUG_TIMEOUT_SECONDS` | `10` | 短信 API 超时 |
+| `SMS_IP_LIMIT_PER_MINUTE` | `3` | 同一 IP 每分钟最多发码次数 |
+| `SMS_IP_LIMIT_PER_HOUR` | `10` | 同一 IP 每小时最多发码次数 |
+| `SMS_TARGET_LIMIT_PER_HOUR` | `5` | 同一手机号每小时最多发码次数 |
 
 开发时 `SMS_DELIVERY=log`，验证码以 `sms_verification_code phone=138****8000 code=... ttl_seconds=600` 写入 uvicorn 日志（号码已脱敏）。
 
@@ -131,6 +134,15 @@ POST <SPUG_URL>
 ```
 
 返回 200 视为成功，其余状态码与网络异常都抛 `SmsDeliveryError`，接口返回 `503 SMS_DELIVERY_UNAVAILABLE` 并立即释放冷却。`SPUG_URL` 含模板 ID，属凭证，只放 `.env.production`，不要提交到 Git。
+
+### 发送限流（防刷）
+
+手机号渠道在 60 秒重发冷却之外，还有三层滑动窗口限流，命中任意一层返回 `429 SMS_SEND_RATE_LIMITED`，`details.retry_after` 为建议等待秒数：
+
+- 同一 IP：每分钟最多 `SMS_IP_LIMIT_PER_MINUTE` 次、每小时最多 `SMS_IP_LIMIT_PER_HOUR` 次。
+- 同一手机号：每小时最多 `SMS_TARGET_LIMIT_PER_HOUR` 次。
+
+计数落在 `verification_send_logs`（`channel`、`target`、`ip_address`、`created_at`），每次进入发送流程前写一行；服务启动时清理 1 天前的记录。邮箱渠道不受这组限流约束，仍只受 60 秒冷却与尝试次数限制。IP 取自 `get_client_ip`，生产在反向代理后读取 `X-Forwarded-For` 首段。
 
 `APP_ENV=production` 时强制 `SMS_DELIVERY=spug`、`EMAIL_DELIVERY=agentsend`，且 `SPUG_URL`、`AGENTSEND_BASE_URL` 必须是 HTTPS，否则应用拒绝启动。
 
@@ -147,6 +159,7 @@ POST <SPUG_URL>
 | 400 | `INVALID_VERIFICATION_CODE` | 验证码错误，`details.attempts_remaining` 为剩余次数 |
 | 429 | `VERIFICATION_ATTEMPTS_EXCEEDED` | 错误次数用尽 |
 | 429 | `VERIFICATION_RESEND_TOO_SOON` | 重发过于频繁，`details.retry_after` 为秒数 |
+| 429 | `SMS_SEND_RATE_LIMITED` | 短信发送超过 IP/号码限额，`details.retry_after` 为秒数 |
 | 503 | `EMAIL_DELIVERY_UNAVAILABLE` | 邮件服务未配置或发送失败 |
 | 503 | `SMS_DELIVERY_UNAVAILABLE` | 短信服务未配置或发送失败 |
 
@@ -155,3 +168,5 @@ POST <SPUG_URL>
 `0007_email_verification` 创建验证表与 `lower(email)` 唯一索引。升级前会检查历史重复邮箱；若存在，迁移会中止并列出冲突邮箱，要求先人工处理，避免静默删除或合并用户数据。`0008_email_verification_code` 移除验证表中不再需要的密码和昵称列，使待验证记录只承担验证码职责。
 
 `0015_phone_auth` 把 `users.email` 改为可空，新增 `users.phone`（唯一、可空）与 `CHECK (email IS NOT NULL OR phone IS NOT NULL)`，并新建 `phone_verifications`。升级前已有的邮箱账号无需改动；降级会删除手机号列与手机验证表，需先确认没有仅用手机号注册的账号。
+
+`0016_sms_send_logs` 新建 `verification_send_logs` 及两个组合索引（`ip_address, created_at` 与 `channel, target, created_at`），只追加表、不改动既有数据；降级会删表并清空防刷计数。

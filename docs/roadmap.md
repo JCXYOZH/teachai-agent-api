@@ -12,7 +12,7 @@
 - 不勾选时仅保存配置信息，不做多厂商链式兜底；本地模型不可用时对已保存配置单次回退一次。
 - 响应解析失败不换厂商，同厂商重试一次。
 
-回归基线：后端 `pytest` 185 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 86 passed。任何新功能都必须在这条基线上不退化。
+回归基线：后端 `pytest` 190 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 88 passed。任何新功能都必须在这条基线上不退化。
 
 ## 非目标（明确不做）
 
@@ -73,8 +73,15 @@
 
 ## P2：体验与稳定性
 
-- 任务队列：当前生成任务用 FastAPI `BackgroundTasks` 在进程内执行，进程重启会中断（已有 `recover_interrupted_jobs` 兜底标记失败）。可评估独立 worker + 队列（Redis/RQ 或 arq）以支持多副本与重试。
-- 公网接入：`cpolar` 免费额度带宽与稳定性有限，长任务易断流；后续换 frp TCP 透传或内网 443 端口映射。
-- 配图质量：引入图片质量评估与可选正式图片服务商（当前 Qwen Image 主通道 + 免费兜底）。
-- 导出体验：确认移动端 PPTX 逐条动画与 HTML 交互组件在更多浏览器上的表现，补齐回归用例。
-- 运维可观测：结构化日志已具备 `request_id`，可补任务耗时与 Provider 调用失败率的聚合。
+已完成：
+
+- 短信防刷（已完成）：手机号渠道在 60 秒冷却之外叠加 IP 与号码双维度滑动窗口限流——同一 IP 每分钟 3 次、每小时 10 次，同一号码每小时 5 次（`SMS_IP_LIMIT_PER_MINUTE` / `SMS_IP_LIMIT_PER_HOUR` / `SMS_TARGET_LIMIT_PER_HOUR`），超限返回 `429 SMS_SEND_RATE_LIMITED` 并带 `details.retry_after`。计数表 `verification_send_logs`，迁移 `0016_sms_send_logs`；邮箱渠道不受影响。
+- 合理措辞（已完成）：回答上方的幕次标题按幕次分组，同一幕内连续问答只在幕切换时显示一次「第 N 幕 · 标题」，切换后显示新幕标题；不再每次回答重复同一标题。
+
+待办：
+
+- 任务队列：当前生成任务用 FastAPI `BackgroundTasks` 在进程内执行，进程重启会中断（已有 `recover_interrupted_jobs` 兜底标记失败）。可评估独立 worker + 队列（Redis/RQ）以支持多副本与重试。
+- 公网接入：`cpolar` 免费额度带宽与稳定性有限，上传大文件等长任务易超时与断流，更换 frp TCP 透传或者内网 443 端口映射。
+- 运维可观：结构化日志已具备 `request_id`，可补任务耗时与 Provider 调用失败率的聚合。
+- 配图质量：引入图片生成质量评估与可选正式图片服务商（当前 Qwen Image 主通道 + 免费兜底）。
+- 优化项目：继续发现项目其他一些可以优化的地方。

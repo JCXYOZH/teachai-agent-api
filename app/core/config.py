@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     verification_code_ttl_seconds: int = 600
     verification_resend_seconds: int = 60
     verification_max_attempts: int = 5
+    sms_ip_limit_per_minute: int = 3
+    sms_ip_limit_per_hour: int = 10
+    sms_target_limit_per_hour: int = 5
 
     @model_validator(mode="after")
     def validate_security_config(self) -> "Settings":
@@ -150,6 +153,12 @@ class Settings(BaseSettings):
             raise ValueError("VERIFICATION_RESEND_SECONDS must be between 10 and 600")
         if not 3 <= self.verification_max_attempts <= 10:
             raise ValueError("VERIFICATION_MAX_ATTEMPTS must be between 3 and 10")
+        if not 1 <= self.sms_ip_limit_per_minute <= 60:
+            raise ValueError("SMS_IP_LIMIT_PER_MINUTE must be between 1 and 60")
+        if not 1 <= self.sms_ip_limit_per_hour <= 500:
+            raise ValueError("SMS_IP_LIMIT_PER_HOUR must be between 1 and 500")
+        if not 1 <= self.sms_target_limit_per_hour <= 100:
+            raise ValueError("SMS_TARGET_LIMIT_PER_HOUR must be between 1 and 100")
         if self.access_token_minutes < 1 or self.access_token_minutes > 1440:
             raise ValueError("ACCESS_TOKEN_MINUTES must be between 1 and 1440")
         if self.refresh_token_days < 1 or self.refresh_token_days > 365:

@@ -96,9 +96,12 @@ def _require_csrf(request: Request) -> tuple:
 )
 async def send_registration_code(
     payload: SendRegistrationCodeRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> RegistrationCodeResponse:
-    pending = await AuthService(db, settings).send_registration_code(payload)
+    pending = await AuthService(db, settings).send_registration_code(
+        payload, get_client_ip(request, settings)
+    )
     return RegistrationCodeResponse(
         channel=pending.channel,  # type: ignore[arg-type]
         target=pending.target,

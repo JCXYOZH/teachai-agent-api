@@ -15,6 +15,7 @@ from app.models.outline import CourseOutline
 from app.models.phone_verification import PhoneVerification
 from app.models.provider_config import ProviderConfig
 from app.models.user import User
+from app.models.verification_log import VerificationSendLog
 
 __all__ = [
     "Asset",
@@ -34,5 +35,6 @@ __all__ = [
     "PhoneVerification",
     "ProviderConfig",
     "User",
+    "VerificationSendLog",
 ]
 

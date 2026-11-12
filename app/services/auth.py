@@ -32,6 +32,7 @@ from app.models.auth_session import AuthSession
 from app.models.email_verification import EmailVerification
 from app.models.phone_verification import PhoneVerification
 from app.models.user import User
+from app.models.verification_log import VerificationSendLog
 from app.schemas.auth import (
     LoginRequest,
     RegisterRequest,
@@ -76,10 +77,12 @@ class AuthService:
         self.settings = settings
 
     async def send_registration_code(
-        self, payload: SendRegistrationCodeRequest
+        self,
+        payload: SendRegistrationCodeRequest,
+        ip_address: Optional[str] = None,
     ) -> PendingRegistration:
         if payload.phone is not None:
-            return await self._send_phone_code(payload.phone)
+            return await self._send_phone_code(payload.phone, ip_address)
         return await self._send_email_code(normalize_email(str(payload.email)))
 
     async def _send_email_code(self, email: str) -> PendingRegistration:
@@ -88,7 +91,10 @@ class AuthService:
         await self._deliver_code(pending, code)
         return self._pending_response(pending)
 
-    async def _send_phone_code(self, phone: str) -> PendingRegistration:
+    async def _send_phone_code(
+        self, phone: str, ip_address: Optional[str]
+    ) -> PendingRegistration:
+        await self._enforce_sms_send_limits(phone, ip_address)
         await self._ensure_phone_available(phone)
         pending, code = await self._upsert_phone_pending(phone)
         await self._deliver_sms_code(pending, code)
@@ -228,6 +234,75 @@ class AuthService:
             "The verification code is incorrect",
             details={"attempts_remaining": remaining},
         )
+
+    async def _enforce_sms_send_limits(
+        self, phone: str, ip_address: Optional[str]
+    ) -> None:
+        now = utcnow()
+        rules = [
+            (
+                VerificationSendLog.target == phone,
+                now - timedelta(hours=1),
+                self.settings.sms_target_limit_per_hour,
+                3600,
+            )
+        ]
+        if ip_address:
+            rules.append(
+                (
+                    VerificationSendLog.ip_address == ip_address,
+                    now - timedelta(minutes=1),
+                    self.settings.sms_ip_limit_per_minute,
+                    60,
+                )
+            )
+            rules.append(
+                (
+                    VerificationSendLog.ip_address == ip_address,
+                    now - timedelta(hours=1),
+                    self.settings.sms_ip_limit_per_hour,
+                    3600,
+                )
+            )
+
+        for condition, since, limit, window_seconds in rules:
+            stamps = list(
+                (
+                    await self.db.scalars(
+                        select(VerificationSendLog.created_at)
+                        .where(condition, VerificationSendLog.created_at >= since)
+                        .order_by(VerificationSendLog.created_at)
+                    )
+                ).all()
+            )
+            if len(stamps) >= limit:
+                retry_after = max(
+                    1,
+                    int(
+                        (
+                            stamps[0]
+                            + timedelta(seconds=window_seconds)
+                            - now
+                        ).total_seconds()
+                    )
+                    + 1,
+                )
+                raise AppError(
+                    429,
+                    "SMS_SEND_RATE_LIMITED",
+                    "Too many verification SMS requests",
+                    details={"retry_after": retry_after},
+                )
+
+        self.db.add(
+            VerificationSendLog(
+                channel="phone",
+                target=phone,
+                ip_address=(ip_address or "")[:64] or None,
+                created_at=now,
+            )
+        )
+        await self.db.commit()
 
     async def _ensure_email_available(self, email: str) -> None:
         existing = await self.db.scalar(select(User).where(User.email == email))
@@ -590,7 +665,12 @@ async def purge_stale_verifications() -> int:
                 )
             )
         )
+        log_result = await db.execute(
+            delete(VerificationSendLog).where(VerificationSendLog.created_at < cutoff)
+        )
         await db.commit()
-        return int(getattr(email_result, "rowcount", 0) or 0) + int(
-            getattr(phone_result, "rowcount", 0) or 0
+        return (
+            int(getattr(email_result, "rowcount", 0) or 0)
+            + int(getattr(phone_result, "rowcount", 0) or 0)
+            + int(getattr(log_result, "rowcount", 0) or 0)
         )
