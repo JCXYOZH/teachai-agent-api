@@ -1,7 +1,8 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -34,6 +35,8 @@ from app.services.llm import (
     LLMTimeoutError,
     call_anthropic,
     call_openai_compatible,
+    stream_anthropic,
+    stream_openai_compatible,
 )
 from app.services.materials import load_course_materials
 from app.services.providers import ProviderConfigService, ResolvedProvider
@@ -41,6 +44,24 @@ from app.services.providers import ProviderConfigService, ResolvedProvider
 logger = logging.getLogger(__name__)
 
 LOCAL_DAY_OFFSET = timedelta(hours=8)
+
+
+@dataclass
+class _ChatContext:
+    course: Course
+    stage: CourseStage
+    scene: Optional[CourseScene]
+    session: CourseChatSession
+    user_prompt: str
+    used: int
+    limit: int
+    candidates: List[ResolvedProvider]
+
+
+@dataclass
+class _StreamDelta:
+    text: str
+    provider: ResolvedProvider
 
 
 class ChatService:
@@ -71,6 +92,18 @@ class ChatService:
         course_id: UUID,
         payload: ChatMessageRequest,
     ) -> ChatReplyView:
+        context = await self._prepare_message(owner, course_id, payload)
+        answer, resolved = await self._answer(context.candidates, context.user_prompt)
+        return await self._store_reply(
+            owner, context, payload.message, answer, resolved
+        )
+
+    async def _prepare_message(
+        self,
+        owner: User,
+        course_id: UUID,
+        payload: ChatMessageRequest,
+    ) -> _ChatContext:
         course = await self._get_course(owner.id, course_id)
         stage = await self._require_stage(owner.id, course.id, payload.stage_id)
         scene = await self._resolve_scene(owner.id, stage, payload.scene_id)
@@ -112,56 +145,291 @@ class ChatService:
             history=history,
             question=payload.message,
         )
-
         candidates = await ProviderConfigService(
             self.db, self.settings
         ).resolve_generation_candidates(owner)
-        answer, resolved = await self._answer(candidates, user_prompt)
+        return _ChatContext(
+            course=course,
+            stage=stage,
+            scene=scene,
+            session=session,
+            user_prompt=user_prompt,
+            used=used,
+            limit=limit,
+            candidates=candidates,
+        )
 
+    async def _store_reply(
+        self,
+        owner: User,
+        context: _ChatContext,
+        question: str,
+        answer: str,
+        resolved: ResolvedProvider,
+    ) -> ChatReplyView:
         now = utcnow()
         question_message = CourseChatMessage(
             owner_id=owner.id,
             created_at=now,
-            session_id=session.id,
+            session_id=context.session.id,
             role="user",
-            content=payload.message,
-            stage_id=stage.id,
-            stage_title=stage.name,
-            stage_index=stage.version,
-            scene_id=scene.id if scene is not None else None,
-            scene_title=scene.title if scene is not None else None,
+            content=question,
+            stage_id=context.stage.id,
+            stage_title=context.stage.name,
+            stage_index=context.stage.version,
+            scene_id=context.scene.id if context.scene is not None else None,
+            scene_title=(
+                context.scene.title if context.scene is not None else None
+            ),
         )
         reply_message = CourseChatMessage(
             owner_id=owner.id,
             created_at=now + timedelta(microseconds=1000),
-            session_id=session.id,
+            session_id=context.session.id,
             role="assistant",
             content=answer,
-            stage_id=stage.id,
-            stage_title=stage.name,
-            stage_index=stage.version,
-            scene_id=scene.id if scene is not None else None,
-            scene_title=scene.title if scene is not None else None,
+            stage_id=context.stage.id,
+            stage_title=context.stage.name,
+            stage_index=context.stage.version,
+            scene_id=context.scene.id if context.scene is not None else None,
+            scene_title=(
+                context.scene.title if context.scene is not None else None
+            ),
             provider_id=resolved.spec.id,
             model_name=resolved.default_model,
         )
         self.db.add(question_message)
         self.db.add(reply_message)
-        session.updated_at = utcnow()
+        context.session.updated_at = utcnow()
         await self.db.commit()
         await self.db.refresh(question_message)
         await self.db.refresh(reply_message)
-
-        used += 1
+        used = context.used + 1
         return ChatReplyView(
-            course_id=course.id,
-            session_id=session.id,
+            course_id=context.course.id,
+            session_id=context.session.id,
             question=self._message_view(question_message),
             reply=self._message_view(reply_message),
-            daily_limit=limit,
+            daily_limit=context.limit,
             daily_used=used,
-            remaining_today=max(limit - used, 0),
+            remaining_today=max(context.limit - used, 0),
         )
+
+    async def open_message_stream(
+        self,
+        owner: User,
+        course_id: UUID,
+        payload: ChatMessageRequest,
+    ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
+        context = await self._prepare_message(owner, course_id, payload)
+        return self._stream_context(owner, context, payload.message)
+
+    async def _stream_context(
+        self,
+        owner: User,
+        context: _ChatContext,
+        question: str,
+    ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
+        chunks: List[str] = []
+        resolved: Optional[ResolvedProvider] = None
+        try:
+            async for delta in self._stream_answer(
+                context.candidates, context.user_prompt
+            ):
+                resolved = delta.provider
+                chunks.append(delta.text)
+                yield ("delta", {"text": delta.text})
+        except asyncio.CancelledError:
+            raise
+        except AppError as exc:
+            yield ("error", self._stream_error(exc))
+            return
+        except Exception:
+            logger.exception("chat_stream_failed")
+            yield (
+                "error",
+                self._stream_error(
+                    AppError(
+                        500, "INTERNAL_ERROR", "An unexpected error occurred"
+                    )
+                ),
+            )
+            return
+
+        answer = "".join(chunks).strip()
+        if resolved is None or not answer:
+            yield (
+                "error",
+                self._stream_error(
+                    AppError(
+                        502,
+                        "CHAT_EMPTY_RESPONSE",
+                        "Teacher returned an empty answer",
+                    )
+                ),
+            )
+            return
+        try:
+            reply = await self._store_reply(
+                owner, context, question, answer, resolved
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("chat_stream_persist_failed")
+            yield (
+                "error",
+                self._stream_error(
+                    AppError(
+                        500, "INTERNAL_ERROR", "An unexpected error occurred"
+                    )
+                ),
+            )
+            return
+        yield ("done", reply.model_dump(mode="json"))
+
+    async def _stream_answer(
+        self,
+        candidates: List[ResolvedProvider],
+        user_prompt: str,
+    ) -> AsyncIterator[_StreamDelta]:
+        for index, resolved in enumerate(candidates):
+            emitted = False
+            try:
+                async for text in self._stream_provider_with_retry(
+                    resolved, user_prompt
+                ):
+                    if not text:
+                        continue
+                    emitted = True
+                    yield _StreamDelta(text=text, provider=resolved)
+                return
+            except LLMTimeoutError as exc:
+                raise AppError(
+                    504, "CHAT_TIMEOUT", "Teacher response timed out"
+                ) from exc
+            except LLMEmptyResponseError as exc:
+                logger.warning("chat_empty_response provider=%s", resolved.spec.id)
+                raise AppError(
+                    502,
+                    "CHAT_EMPTY_RESPONSE",
+                    "Teacher returned an empty answer",
+                ) from exc
+            except LLMProviderError as exc:
+                has_fallback = index + 1 < len(candidates)
+                if emitted or not has_fallback:
+                    logger.warning(
+                        "chat_stream_provider_failed provider=%s error=%s",
+                        resolved.spec.id,
+                        type(exc).__name__,
+                    )
+                    raise AppError(
+                        502,
+                        "CHAT_PROVIDER_ERROR",
+                        "Teacher model request failed",
+                    ) from exc
+                logger.warning(
+                    "chat_stream_provider_fallback from=%s to=%s",
+                    resolved.spec.id,
+                    candidates[index + 1].spec.id,
+                )
+        raise AppError(502, "CHAT_PROVIDER_ERROR", "Teacher model request failed")
+
+    async def _stream_provider_with_retry(
+        self,
+        resolved: ResolvedProvider,
+        user_prompt: str,
+    ) -> AsyncIterator[str]:
+        last_empty: Optional[LLMEmptyResponseError] = None
+        for _attempt in range(2):
+            produced = False
+            try:
+                async for text in self._stream_provider(resolved, user_prompt):
+                    if not text:
+                        continue
+                    produced = True
+                    yield text
+                if produced:
+                    return
+                last_empty = LLMEmptyResponseError("Model returned an empty answer")
+            except LLMEmptyResponseError as exc:
+                last_empty = exc
+                continue
+        assert last_empty is not None
+        raise last_empty
+
+    async def _stream_provider(
+        self, resolved: ResolvedProvider, user_prompt: str
+    ) -> AsyncIterator[str]:
+        timeout = self.settings.chat_generation_timeout_seconds
+        iterator = self._call_provider_stream(resolved, user_prompt).__aiter__()
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise LLMTimeoutError("Model request timed out")
+                try:
+                    text = await asyncio.wait_for(
+                        iterator.__anext__(), timeout=remaining
+                    )
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError as exc:
+                    raise LLMTimeoutError("Model request timed out") from exc
+                if text:
+                    yield text
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
+
+    def _call_provider_stream(
+        self, resolved: ResolvedProvider, user_prompt: str
+    ) -> AsyncIterator[str]:
+        timeout = self.settings.chat_generation_timeout_seconds
+        text_only = (
+            resolved.spec.id == "qwen" and "omni" in resolved.default_model.lower()
+        )
+        if resolved.spec.protocol == "anthropic":
+            return stream_anthropic(
+                base_url=resolved.base_url,
+                api_key=resolved.api_key,
+                model=resolved.default_model,
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                timeout=timeout,
+                max_tokens=self.settings.chat_max_tokens,
+                temperature=0.3,
+                provider_id=resolved.spec.id,
+            )
+        return stream_openai_compatible(
+            base_url=resolved.base_url,
+            api_key=resolved.api_key,
+            model=resolved.default_model,
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            timeout=timeout,
+            max_tokens=self.settings.chat_max_tokens,
+            temperature=0.3,
+            text_only=text_only,
+            disable_thinking=resolved.spec.supports_thinking_control,
+            provider_id=resolved.spec.id,
+        )
+
+    def _stream_error(self, exc: AppError) -> Dict[str, Any]:
+        return {
+            "status": exc.status_code,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+            },
+        }
 
     async def clear(self, owner: User, course_id: UUID) -> None:
         course = await self._get_course(owner.id, course_id)

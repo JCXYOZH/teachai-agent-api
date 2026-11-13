@@ -1,4 +1,5 @@
-from typing import Any, Dict, List
+import json
+from typing import Any, Dict, List, Tuple
 
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -326,3 +327,174 @@ async def test_chat_message_validation(client: AsyncClient, monkeypatch: Any) ->
     async with AsyncSessionLocal() as session:
         stored = await session.scalars(select(CourseChatMessage))
         assert "helloworld" in [item.content for item in stored.all()]
+
+def parse_sse(body: str) -> List[Tuple[str, Dict[str, Any]]]:
+    events: List[Tuple[str, Dict[str, Any]]] = []
+    normalized = body.replace("\r\n", "\n")
+    for block in normalized.split("\n\n"):
+        if not block.strip() or block.lstrip().startswith(":"):
+            continue
+        event = "message"
+        data: List[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+        if data:
+            events.append((event, json.loads("\n".join(data))))
+    return events
+
+
+async def stream_chat(
+    client: AsyncClient,
+    course_id: str,
+    headers: Dict[str, str],
+    message: str,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    async with client.stream(
+        "POST",
+        f"{API}/courses/{course_id}/chat/messages/stream",
+        headers=headers,
+        json={"message": message},
+    ) as response:
+        assert response.status_code == 200, await response.aread()
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join([part async for part in response.aiter_text()])
+    return parse_sse(body)
+
+
+async def test_chat_streams_deltas_and_persists_history(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await login(client, "chat-stream@example.com")
+    course_id = await build_classroom(client, headers, monkeypatch)
+
+    async def fake_stream(
+        self: ChatService, resolved: Any, user_prompt: str
+    ) -> Any:
+        assert resolved.spec.id == "llama-local"
+        assert "STREAM-QUESTION" in user_prompt
+        yield "STREAM-"
+        yield "ANSWER"
+
+    monkeypatch.setattr(ChatService, "_call_provider_stream", fake_stream)
+
+    events = await stream_chat(client, course_id, headers, "STREAM-QUESTION")
+
+    assert [name for name, _data in events] == ["delta", "delta", "done"]
+    assert "".join(data["text"] for name, data in events if name == "delta") == (
+        "STREAM-ANSWER"
+    )
+    done = events[-1][1]
+    assert done["reply"]["content"] == "STREAM-ANSWER"
+    assert done["reply"]["provider_id"] == "llama-local"
+    assert done["remaining_today"] == settings.chat_daily_message_limit - 1
+
+    thread = await client.get(f"{API}/courses/{course_id}/chat", headers=headers)
+    payload = thread.json()
+    assert [item["content"] for item in payload["messages"]] == [
+        "STREAM-QUESTION",
+        "STREAM-ANSWER",
+    ]
+
+
+async def test_chat_stream_falls_back_before_first_token(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await login(client, "chat-stream-fallback@example.com")
+    course_id = await build_classroom(client, headers, monkeypatch)
+    await client.put(
+        f"{API}/providers/openai/config",
+        headers=headers,
+        json={"api_key": "sk-chat-stream-fallback-1234", "default_model": "gpt-4o-mini"},
+    )
+    attempts: List[str] = []
+
+    async def fake_stream(
+        self: ChatService, resolved: Any, user_prompt: str
+    ) -> Any:
+        attempts.append(resolved.spec.id)
+        if resolved.spec.id == "llama-local":
+            raise LLMProviderError("Model provider request failed")
+        yield "FALLBACK-STREAM"
+
+    monkeypatch.setattr(ChatService, "_call_provider_stream", fake_stream)
+
+    events = await stream_chat(client, course_id, headers, "Fallback please")
+
+    done = events[-1][1]
+    assert done["reply"]["content"] == "FALLBACK-STREAM"
+    assert done["reply"]["provider_id"] == "openai"
+    assert attempts == ["llama-local", "openai"]
+
+
+async def test_chat_stream_retries_empty_answer_on_same_provider(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await login(client, "chat-stream-empty@example.com")
+    course_id = await build_classroom(client, headers, monkeypatch)
+    calls: List[str] = []
+
+    async def fake_stream(
+        self: ChatService, resolved: Any, user_prompt: str
+    ) -> Any:
+        calls.append(resolved.spec.id)
+        if len(calls) == 1:
+            return
+            yield ""
+        yield "RECOVERED-STREAM"
+
+    monkeypatch.setattr(ChatService, "_call_provider_stream", fake_stream)
+
+    events = await stream_chat(client, course_id, headers, "Retry please")
+
+    done = events[-1][1]
+    assert done["reply"]["content"] == "RECOVERED-STREAM"
+    assert calls == ["llama-local", "llama-local"]
+
+
+async def test_chat_stream_enforces_daily_limit_before_streaming(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await login(client, "chat-stream-limit@example.com")
+    course_id = await build_classroom(client, headers, monkeypatch)
+
+    async def fake_stream(
+        self: ChatService, resolved: Any, user_prompt: str
+    ) -> Any:
+        yield "LIMITED"
+
+    monkeypatch.setattr(ChatService, "_call_provider_stream", fake_stream)
+    monkeypatch.setattr(settings, "chat_daily_message_limit", 1)
+
+    await stream_chat(client, course_id, headers, "First")
+    second = await client.post(
+        f"{API}/courses/{course_id}/chat/messages/stream",
+        headers=headers,
+        json={"message": "Second"},
+    )
+
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "CHAT_DAILY_LIMIT_REACHED"
+
+async def test_chat_stream_emits_error_event_without_fallback(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await login(client, "chat-stream-error@example.com")
+    course_id = await build_classroom(client, headers, monkeypatch)
+
+    async def fake_stream(
+        self: ChatService, resolved: Any, user_prompt: str
+    ) -> Any:
+        raise LLMProviderError("Model provider request failed")
+        yield ""
+
+    monkeypatch.setattr(ChatService, "_call_provider_stream", fake_stream)
+
+    events = await stream_chat(client, course_id, headers, "Fail please")
+
+    assert events[-1][0] == "error"
+    error = events[-1][1]
+    assert error["status"] == 502
+    assert error["error"]["code"] == "CHAT_PROVIDER_ERROR"

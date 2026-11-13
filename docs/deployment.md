@@ -249,6 +249,8 @@ sudo firewall-cmd --reload
 
 Pollinations 免费层默认按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默认 45 秒，范围 0–300）在进程内串行；配置 `IMAGE_POLLINATIONS_TOKEN` 后可设为 0。多副本部署时各进程独立计数，生产建议配置 Token 或改用 Qwen。
 
+教师对话使用 SSE 流式返回；Nginx 需关闭响应缓冲（`proxy_buffering off;` 与 `proxy_cache off;`）并为该路由放宽 `proxy_read_timeout`。后端已返回 `X-Accel-Buffering: no`，cpolar/frp 需确认链路不做缓冲。
+
 ## 验收清单
 
 1. `curl -fsS https://ai.offer.us.ci/api/v1/health` 返回 `status=ok`。

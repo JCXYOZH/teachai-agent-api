@@ -2,7 +2,12 @@ from typing import Any, Dict
 
 import pytest
 
-from app.services.llm import LLMProviderError, call_openai_compatible
+from app.services.llm import (
+    LLMEmptyResponseError,
+    LLMProviderError,
+    call_openai_compatible,
+    stream_openai_compatible,
+)
 
 
 class FakeResult:
@@ -78,3 +83,52 @@ async def test_openai_compatible_rejects_empty_content(monkeypatch: Any) -> None
             user_prompt="user",
             timeout=5,
         )
+
+class FakeStreamChat(FakeChat):
+    async def astream(self, _messages: Any) -> Any:
+        for content in ("STREAM-A", "STREAM-B"):
+            yield FakeResult(content)
+
+
+async def test_openai_compatible_streams_chunks(monkeypatch: Any) -> None:
+    monkeypatch.setattr("app.services.llm.ChatOpenAI", FakeStreamChat)
+
+    chunks = [
+        chunk
+        async for chunk in stream_openai_compatible(
+            base_url="http://127.0.0.1:65535/v1",
+            api_key=None,
+            model="Qwen3.6-35B-A3B",
+            system_prompt="system",
+            user_prompt="user",
+            timeout=5,
+            disable_thinking=True,
+        )
+    ]
+
+    assert chunks == ["STREAM-A", "STREAM-B"]
+    assert FakeChat.captured["model_kwargs"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+async def test_openai_compatible_stream_rejects_empty_content(
+    monkeypatch: Any,
+) -> None:
+    class EmptyStreamChat(FakeChat):
+        async def astream(self, _messages: Any) -> Any:
+            if False:
+                yield FakeResult("")
+
+    monkeypatch.setattr("app.services.llm.ChatOpenAI", EmptyStreamChat)
+
+    with pytest.raises(LLMEmptyResponseError):
+        async for _chunk in stream_openai_compatible(
+            base_url="http://127.0.0.1:65535/v1",
+            api_key=None,
+            model="Qwen3.6-35B-A3B",
+            system_prompt="system",
+            user_prompt="user",
+            timeout=5,
+        ):
+            pass
