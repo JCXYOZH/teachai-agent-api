@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     image_target_height: int = 576
     image_pollinations_base_url: str = "https://image.pollinations.ai/prompt"
     image_pollinations_model: str = "flux"
+    image_pollinations_token: str = ""
     image_fallback_chain: str = "pollinations"
     image_hf_endpoint: str = "https://api-inference.huggingface.co/models"
     image_hf_model: str = "black-forest-labs/FLUX.1-schnell"
@@ -86,6 +87,13 @@ class Settings(BaseSettings):
     image_cloudflare_account_id: str = ""
     image_cloudflare_api_token: str = ""
     image_cloudflare_model: str = "@cf/black-forest-labs/flux-1-schnell"
+    image_quality_enabled: bool = True
+    image_quality_min_score: int = 60
+    image_quality_retry: int = 1
+    image_quality_vlm_enabled: bool = False
+    image_quality_vlm_provider_id: str = "qwen"
+    image_quality_vlm_model: str = "qwen3-vl-plus"
+    image_quality_vlm_timeout_seconds: float = 45.0
     export_max_bytes: int = 40 * 1024 * 1024
     openai_api_key: str = ""
     anthropic_api_key: str = ""
@@ -254,6 +262,19 @@ class Settings(BaseSettings):
                     "IMAGE_FALLBACK_CHAIN must contain qwen, pollinations, "
                     "huggingface or cloudflare entries"
                 )
+        if not 0 <= self.image_quality_min_score <= 100:
+            raise ValueError("IMAGE_QUALITY_MIN_SCORE must be between 0 and 100")
+        if not 0 <= self.image_quality_retry <= 3:
+            raise ValueError("IMAGE_QUALITY_RETRY must be between 0 and 3")
+        if not 5 <= self.image_quality_vlm_timeout_seconds <= 180:
+            raise ValueError(
+                "IMAGE_QUALITY_VLM_TIMEOUT_SECONDS must be between 5 and 180"
+            )
+        if self.image_quality_vlm_enabled:
+            if self.image_quality_vlm_provider_id.strip().lower() != "qwen":
+                raise ValueError("IMAGE_QUALITY_VLM_PROVIDER_ID must be qwen")
+            if not self.image_quality_vlm_model.strip():
+                raise ValueError("IMAGE_QUALITY_VLM_MODEL must not be empty")
         return self
 
     @property

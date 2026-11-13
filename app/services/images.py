@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import html
@@ -6,7 +7,7 @@ import ipaddress
 import logging
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
@@ -25,6 +26,12 @@ from app.models.media import MediaAsset
 from app.models.user import User
 from app.schemas.classroom import GenerationJobView, IllustrationGenerateRequest
 from app.services import generation_jobs
+from app.services.image_quality import (
+    QualityReport,
+    assess_image,
+    quality_metadata,
+)
+from app.services.image_vlm import score_illustration
 from app.services.media_storage import LocalMediaStorage
 from app.services.providers import ProviderConfigService, ResolvedProvider
 
@@ -33,6 +40,17 @@ logger = logging.getLogger(__name__)
 ILLUSTRATION_ACTION_ID = "illustration"
 QWEN_PROVIDER_ID = "qwen"
 POLLINATIONS_PROVIDER_ID = "pollinations"
+POLLINATIONS_SEED_LIMIT = 2 ** 31 - 1
+POLLINATIONS_MAX_ATTEMPTS = 3
+POLLINATIONS_RETRY_DELAY_SECONDS = 1.0
+POLLINATIONS_RETRY_CODES = frozenset(
+    {"IMAGE_DOWNLOAD_FAILED", "IMAGE_TIMEOUT", "IMAGE_INVALID_RESPONSE"}
+)
+RATE_LIMITED_MESSAGE = (
+    "Image provider rate limit reached: pollinations free tier allows one "
+    "image every 45 seconds per IP; set IMAGE_POLLINATIONS_TOKEN or retry later"
+)
+VLM_MAX_CONSECUTIVE_FAILURES = 2
 HUGGINGFACE_PROVIDER_ID = "huggingface"
 CLOUDFLARE_PROVIDER_ID = "cloudflare"
 SUPPORTED_PROVIDER_IDS = {
@@ -55,6 +73,7 @@ class GeneratedImage:
     height: int
     provider_id: str
     model: str
+    quality: Optional[Dict[str, Any]] = None
 
 
 class IllustrationService:
@@ -62,6 +81,7 @@ class IllustrationService:
         self.db = db
         self.settings = settings
         self.storage = LocalMediaStorage(settings)
+        self._vlm_skips = 0
 
     async def create_job(
         self,
@@ -256,6 +276,7 @@ class IllustrationService:
             asset is not None
             and not regenerate
             and asset.content_hash in known_hashes
+            and self._reusable(asset)
             and self.storage.exists(owner.id, asset.id, asset.storage_key)
         ):
             await self._attach_illustration(scene, asset)
@@ -273,9 +294,12 @@ class IllustrationService:
                 .order_by(MediaAsset.created_at.desc())
                 .limit(1)
             )
-        if cached is not None and (
-            asset is None or cached.id != asset.id
-        ) and self.storage.exists(owner.id, cached.id, cached.storage_key):
+        if (
+            cached is not None
+            and (asset is None or cached.id != asset.id)
+            and self._reusable(cached)
+            and self.storage.exists(owner.id, cached.id, cached.storage_key)
+        ):
             data = self.storage.resolve(
                 owner.id, cached.id, cached.storage_key
             ).read_bytes()
@@ -285,6 +309,7 @@ class IllustrationService:
                 height=int(cached.media_metadata.get("height") or 0),
                 provider_id=cached.provider_id or "qwen",
                 model=cached.model_name or qwen_model,
+                quality=self._asset_quality(cached),
             )
             content_hash = cached.content_hash
         else:
@@ -326,12 +351,15 @@ class IllustrationService:
         asset.sha256 = saved.sha256
         asset.content_hash = content_hash
         asset.storage_key = saved.storage_key
-        asset.media_metadata = {
+        media_metadata: Dict[str, Any] = {
             "width": generated.width,
             "height": generated.height,
             "prompt": prompt,
             "source": "generated",
         }
+        if generated.quality is not None:
+            media_metadata["quality"] = generated.quality
+        asset.media_metadata = media_metadata
         await self._attach_illustration(scene, asset)
         await self.db.commit()
         return "generated", generated.provider_id, generated.model
@@ -348,7 +376,7 @@ class IllustrationService:
         failures: List[str] = []
         for provider_id in self._attempt_order(requested_provider):
             try:
-                return await self._generate_with(
+                return await self._generate_with_quality(
                     provider_id,
                     owner=owner,
                     prompt=prompt,
@@ -356,7 +384,7 @@ class IllustrationService:
                     pollinations_model=pollinations_model,
                 )
             except AppError as exc:
-                failures.append(f"{provider_id}:{exc.code}")
+                failures.append(f"{provider_id}({exc.code}): {exc.message}")
                 logger.warning(
                     "image_provider_failed provider=%s code=%s message=%s",
                     provider_id,
@@ -373,8 +401,110 @@ class IllustrationService:
         raise AppError(
             502,
             "IMAGE_PROVIDER_ERROR",
-            "Every image provider failed: " + ", ".join(failures),
+            "Every image provider failed: " + "; ".join(failures)[:300],
         )
+
+    async def _generate_with_quality(
+        self,
+        provider_id: str,
+        *,
+        owner: User,
+        prompt: str,
+        qwen_model: str,
+        pollinations_model: Optional[str],
+    ) -> GeneratedImage:
+        settings = self.settings
+        if not settings.image_quality_enabled:
+            return await self._generate_with(
+                provider_id,
+                owner=owner,
+                prompt=prompt,
+                qwen_model=qwen_model,
+                pollinations_model=pollinations_model,
+            )
+        attempts = 1 + max(0, settings.image_quality_retry)
+        best_image: Optional[GeneratedImage] = None
+        best_report: Optional[QualityReport] = None
+        for attempt in range(attempts):
+            attempt_prompt = prompt if attempt == 0 else _retry_prompt(prompt, attempt)
+            generated = await self._generate_with(
+                provider_id,
+                owner=owner,
+                prompt=attempt_prompt,
+                qwen_model=qwen_model,
+                pollinations_model=pollinations_model,
+            )
+            report = await run_in_threadpool(
+                assess_image,
+                generated.data,
+                min_score=settings.image_quality_min_score,
+            )
+            scored = replace(generated, quality=quality_metadata(report))
+            if best_report is None or report.score > best_report.score:
+                best_image = scored
+                best_report = report
+            if report.status == "ok":
+                break
+            logger.warning(
+                "image_quality_low provider=%s score=%s reasons=%s attempt=%s",
+                provider_id,
+                report.score,
+                ",".join(report.reasons) or "none",
+                attempt + 1,
+            )
+        assert best_image is not None
+        if settings.image_quality_vlm_enabled:
+            best_image = await self._vlm_scored(best_image, owner=owner, prompt=prompt)
+        return best_image
+
+    async def _vlm_scored(
+        self, image: GeneratedImage, *, owner: User, prompt: str
+    ) -> GeneratedImage:
+        settings = self.settings
+        if self._vlm_skips >= VLM_MAX_CONSECUTIVE_FAILURES:
+            return image
+        vlm = await score_illustration(
+            db=self.db,
+            settings=settings,
+            owner=owner,
+            image=image.data,
+            prompt=prompt,
+        )
+        if vlm is None:
+            self._vlm_skips += 1
+            return image
+        self._vlm_skips = 0
+        quality = dict(image.quality or {})
+        quality["vlm"] = {
+            "score": vlm.score,
+            "issues": vlm.issues,
+            "model": vlm.model,
+        }
+        if vlm.score < settings.image_quality_min_score:
+            quality["status"] = "low"
+        logger.info(
+            "image_quality_vlm provider=%s score=%s issues=%s",
+            image.provider_id,
+            vlm.score,
+            len(vlm.issues),
+        )
+        return replace(image, quality=quality)
+
+    def _quality_enabled(self) -> bool:
+        return bool(self.settings.image_quality_enabled)
+
+    def _asset_quality(self, asset: MediaAsset) -> Optional[Dict[str, Any]]:
+        metadata = asset.media_metadata if isinstance(asset.media_metadata, dict) else {}
+        quality = metadata.get("quality")
+        return quality if isinstance(quality, dict) else None
+
+    def _reusable(self, asset: MediaAsset) -> bool:
+        if not self._quality_enabled():
+            return True
+        quality = self._asset_quality(asset)
+        if quality is None:
+            return True
+        return quality.get("status") != "low"
 
     def _provider_model(
         self,
@@ -440,6 +570,7 @@ class IllustrationService:
                 max_width=settings.image_max_width,
                 max_height=settings.image_max_height,
                 webp_quality=settings.image_webp_quality,
+                token=settings.image_pollinations_token,
             )
         if provider_id == HUGGINGFACE_PROVIDER_ID:
             return await generate_huggingface_image(
@@ -478,7 +609,7 @@ class IllustrationService:
     ) -> None:
         metadata = asset.media_metadata if isinstance(asset.media_metadata, dict) else {}
         content = dict(scene.content or {})
-        content["illustration"] = {
+        illustration: Dict[str, Any] = {
             "mediaId": str(asset.id),
             "format": asset.format,
             "mimeType": asset.mime_type,
@@ -490,6 +621,10 @@ class IllustrationService:
             "updatedAt": asset.updated_at.isoformat() if asset.updated_at else None,
             "alt": scene.title,
         }
+        quality = metadata.get("quality")
+        if isinstance(quality, dict):
+            illustration["quality"] = quality
+        content["illustration"] = illustration
         scene.content = content
         await self.db.flush()
 
@@ -728,17 +863,40 @@ async def generate_pollinations_image(
     max_width: int,
     max_height: int,
     webp_quality: int,
+    token: str = "",
 ) -> GeneratedImage:
-    seed = int(hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8], 16)
-    url = _pollinations_url(
-        base_url=base_url,
-        prompt=prompt,
-        model=model,
-        width=width,
-        height=height,
-        seed=seed,
-    )
-    data = await _download_image(url, timeout=timeout, max_bytes=max_bytes)
+    headers = {"Authorization": "Bearer " + token} if token else None
+    data: Optional[bytes] = None
+    for attempt in range(POLLINATIONS_MAX_ATTEMPTS):
+        seed = _pollinations_seed(prompt, attempt)
+        url = _pollinations_url(
+            base_url=base_url,
+            prompt=prompt,
+            model=model,
+            width=width,
+            height=height,
+            seed=seed,
+        )
+        try:
+            data = await _download_image(
+                url, timeout=timeout, max_bytes=max_bytes, headers=headers
+            )
+            break
+        except AppError as exc:
+            retryable = exc.code in POLLINATIONS_RETRY_CODES
+            if not retryable or attempt == POLLINATIONS_MAX_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "image_pollinations_retry attempt=%s code=%s seed=%s",
+                attempt + 1,
+                exc.code,
+                seed,
+            )
+            await asyncio.sleep(POLLINATIONS_RETRY_DELAY_SECONDS * (attempt + 1))
+    if data is None:
+        raise AppError(
+            502, "IMAGE_DOWNLOAD_FAILED", "Generated image could not be downloaded"
+        )
     normalized = await normalize_image(
         data,
         max_width=max_width,
@@ -1024,14 +1182,21 @@ def _qwen_image_generation_url(base_url: str) -> str:
     )
 
 
+def _pollinations_seed(prompt: str, attempt: int = 0) -> int:
+    digest = int(hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8], 16)
+    return (digest + attempt * 104729) % POLLINATIONS_SEED_LIMIT
+
+
 def _pollinations_url(
     *, base_url: str, prompt: str, model: str, width: int, height: int, seed: int
 ) -> str:
+    # pollinations rejects seeds above the signed 32-bit range with HTTP 400.
+    bounded = seed % POLLINATIONS_SEED_LIMIT
     encoded = quote(prompt, safe="")
     return (
         f"{base_url.rstrip('/')}/{encoded}"
         f"?width={width}&height={height}&model={quote(model, safe='')}"
-        f"&seed={seed}&nologo=true"
+        f"&seed={bounded}&nologo=true"
     )
 
 
@@ -1082,7 +1247,23 @@ def _decode_data_uri(value: str) -> bytes:
     return data
 
 
-async def _download_image(url: str, *, timeout: float, max_bytes: int) -> bytes:
+def _download_status_error(status: int) -> AppError:
+    if status in {402, 429}:
+        return AppError(429, "IMAGE_PROVIDER_RATE_LIMITED", RATE_LIMITED_MESSAGE)
+    return AppError(
+        502,
+        "IMAGE_DOWNLOAD_FAILED",
+        f"Generated image could not be downloaded (HTTP {status})",
+    )
+
+
+async def _download_image(
+    url: str,
+    *,
+    timeout: float,
+    max_bytes: int,
+    headers: Optional[Dict[str, str]] = None,
+) -> bytes:
     await _validate_download_url(url)
     try:
         async with httpx.AsyncClient(
@@ -1090,14 +1271,16 @@ async def _download_image(url: str, *, timeout: float, max_bytes: int) -> bytes:
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            async with client.stream("GET", url) as response:
+            async with client.stream("GET", url, headers=headers) as response:
                 if response.status_code != 200:
-                    raise AppError(
-                        502,
-                        "IMAGE_DOWNLOAD_FAILED",
-                        "Generated image could not be downloaded "
-                        f"(HTTP {response.status_code})",
-                    )
+                    if response.status_code < 500:
+                        body = (await response.aread())[:200]
+                        logger.warning(
+                            "image_download_rejected status=%s body=%s",
+                            response.status_code,
+                            body.decode("utf-8", "replace").strip(),
+                        )
+                    raise _download_status_error(response.status_code)
                 content_length = response.headers.get("content-length")
                 if content_length and int(content_length) > max_bytes:
                     raise AppError(
@@ -1207,6 +1390,13 @@ def _content_hash(
 ) -> str:
     material = f"{provider_id}\n{model}\n{prompt}\n{width}x{height}\nwebp"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _retry_prompt(prompt: str, attempt: int) -> str:
+    return (
+        f"{prompt}\n补充要求（第 {attempt + 1} 次尝试）：主体更清晰、层次更丰富，"
+        "避免大面积纯色、欠曝或过曝。"
+    )
 
 
 def _payload_text(payload: Dict[str, Any], key: str) -> Optional[str]:

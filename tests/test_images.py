@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
-from PIL import Image
+from PIL import Image, ImageDraw
 from sqlalchemy import select
 from support import register_and_verify
 
@@ -14,16 +14,21 @@ from app.core.errors import AppError
 from app.db.session import AsyncSessionLocal
 from app.models.classroom import CourseScene, CourseStage
 from app.models.media import MediaAsset
+from app.services.image_vlm import VlmScore
 from app.services.images import (
     GeneratedImage,
+    IllustrationService,
     _cloudflare_image_url,
     _content_hash,
     _decode_data_uri,
+    _download_status_error,
     _image_bytes_from_string,
+    _pollinations_seed,
     _pollinations_url,
     _qwen_image_generation_url,
     _qwen_image_source,
     _validate_download_url,
+    generate_pollinations_image,
     normalize_image,
 )
 from app.services.providers import ResolvedProvider
@@ -34,6 +39,32 @@ API = settings.api_v1_prefix
 def webp_bytes(color: Tuple[int, int, int] = (22, 54, 43)) -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (320, 180), color).save(output, format="WEBP")
+    return output.getvalue()
+
+
+def rich_webp_bytes(width: int = 1024, height: int = 576) -> bytes:
+    image = Image.new("RGB", (width, height), (238, 232, 220))
+    draw = ImageDraw.Draw(image)
+    for step in range(0, width, 16):
+        shade = 30 + int(180 * step / width)
+        draw.rectangle(
+            [step, 0, step + 16, height], fill=(shade, 90, 120 - shade // 3)
+        )
+    for index in range(60):
+        left = (index * 61) % (width - 120)
+        top = (index * 37) % (height - 60)
+        draw.ellipse(
+            [left, top, left + 90, top + 50],
+            fill=(20 + index * 3, 60 + (index * 7) % 120, 200 - index * 2),
+        )
+    output = io.BytesIO()
+    image.save(output, format="WEBP", quality=90)
+    return output.getvalue()
+
+
+def flat_webp_bytes(width: int = 1024, height: int = 576) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 200, 200)).save(output, format="WEBP")
     return output.getvalue()
 
 
@@ -128,9 +159,9 @@ def install_fake_images(
         if fail_qwen:
             raise AppError(502, "IMAGE_PROVIDER_ERROR", "qwen unavailable")
         return GeneratedImage(
-            data=webp_bytes(),
-            width=320,
-            height=180,
+            data=rich_webp_bytes(),
+            width=1024,
+            height=576,
             provider_id="qwen",
             model=str(kwargs["model"]),
         )
@@ -138,9 +169,9 @@ def install_fake_images(
     async def fake_pollinations(**kwargs: Any) -> GeneratedImage:
         calls.append({"provider": "pollinations", **kwargs})
         return GeneratedImage(
-            data=webp_bytes((58, 43, 35)),
-            width=320,
-            height=180,
+            data=rich_webp_bytes(),
+            width=1024,
+            height=576,
             provider_id="pollinations",
             model=str(kwargs["model"]),
         )
@@ -194,7 +225,7 @@ async def test_qwen_illustration_and_authenticated_media(
     illustration = scenes[0]["content"]["illustration"]
     assert illustration["providerId"] == "qwen"
     assert illustration["format"] == "webp"
-    assert illustration["width"] == 320
+    assert illustration["width"] == 1024
     assert illustration["alt"] == "第 1 页主题"
 
     media_id = illustration["mediaId"]
@@ -251,7 +282,7 @@ async def test_qwen_failure_falls_back_to_pollinations(
         )
         assert asset is not None
         assert asset.provider_id == "pollinations"
-        assert asset.media_metadata["width"] == 320
+        assert asset.media_metadata["width"] == 1024
         assert "url" not in asset.media_metadata
         assert "http" not in str(asset.media_metadata)
 
@@ -472,9 +503,9 @@ async def test_fallback_chain_walks_providers_in_order(
         calls.append("huggingface")
         assert kwargs["token"] == "hf-test-token"
         return GeneratedImage(
-            data=webp_bytes((40, 60, 50)),
-            width=320,
-            height=180,
+            data=rich_webp_bytes(),
+            width=1024,
+            height=576,
             provider_id="huggingface",
             model=str(kwargs["model"]),
         )
@@ -499,6 +530,108 @@ async def test_fallback_chain_walks_providers_in_order(
     assert finished["status"] == "completed", finished
     assert finished["provider_id"] == "huggingface"
     assert calls == ["qwen", "pollinations", "huggingface"]
+
+
+async def test_low_quality_illustration_is_retried_once(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-quality@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 1)
+    await configure_qwen(client, headers)
+    calls: List[int] = []
+
+    async def flaky_qwen(
+        resolved: ResolvedProvider, **kwargs: Any
+    ) -> GeneratedImage:
+        calls.append(len(calls) + 1)
+        data = flat_webp_bytes() if len(calls) == 1 else rich_webp_bytes()
+        return GeneratedImage(
+            data=data,
+            width=1024,
+            height=576,
+            provider_id="qwen",
+            model=str(kwargs["model"]),
+        )
+
+    monkeypatch.setattr("app.services.images.generate_qwen_image", flaky_qwen)
+
+    created = await client.post(
+        f"{API}/courses/{course_id}/classroom/scenes/{scene_ids[0]}/illustration",
+        headers=headers,
+        json={},
+    )
+    assert created.status_code == 202, created.text
+    finished = await job_state(client, headers, created.json()["id"])
+    assert finished["status"] == "completed", finished
+    assert len(calls) == 2
+
+    classroom = await client.get(
+        f"{API}/courses/{course_id}/classroom", headers=headers
+    )
+    quality = classroom.json()["scenes"][0]["content"]["illustration"]["quality"]
+    assert quality["status"] == "ok"
+    assert quality["score"] >= 60
+
+
+async def test_quality_checks_can_be_disabled(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-quality-off@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 1)
+    await configure_qwen(client, headers)
+    calls: List[int] = []
+
+    async def flat_qwen(
+        resolved: ResolvedProvider, **kwargs: Any
+    ) -> GeneratedImage:
+        calls.append(len(calls) + 1)
+        return GeneratedImage(
+            data=flat_webp_bytes(),
+            width=1024,
+            height=576,
+            provider_id="qwen",
+            model=str(kwargs["model"]),
+        )
+
+    monkeypatch.setattr("app.services.images.generate_qwen_image", flat_qwen)
+    monkeypatch.setattr(settings, "image_quality_enabled", False)
+
+    created = await client.post(
+        f"{API}/courses/{course_id}/classroom/scenes/{scene_ids[0]}/illustration",
+        headers=headers,
+        json={},
+    )
+    assert created.status_code == 202, created.text
+    finished = await job_state(client, headers, created.json()["id"])
+    assert finished["status"] == "completed", finished
+    assert len(calls) == 1
+
+    classroom = await client.get(
+        f"{API}/courses/{course_id}/classroom", headers=headers
+    )
+    illustration = classroom.json()["scenes"][0]["content"]["illustration"]
+    assert "quality" not in illustration
+
+
+def test_low_quality_assets_are_not_reused(monkeypatch: Any) -> None:
+    service = IllustrationService.__new__(IllustrationService)
+    service.settings = settings
+    asset = MediaAsset()
+
+    asset.media_metadata = {"quality": {"status": "low", "score": 20}}
+    assert service._reusable(asset) is False
+
+    asset.media_metadata = {"quality": {"status": "ok", "score": 92}}
+    assert service._reusable(asset) is True
+
+    asset.media_metadata = {"width": 1024, "height": 576}
+    assert service._reusable(asset) is True
+
+    monkeypatch.setattr(settings, "image_quality_enabled", False)
+    asset.media_metadata = {"quality": {"status": "low", "score": 20}}
+    assert service._reusable(asset) is True
 
 
 async def test_private_download_urls_are_rejected() -> None:
@@ -552,3 +685,232 @@ def test_cloudflare_image_url_requires_safe_ids() -> None:
         _cloudflare_image_url("../evil", "flux-1-schnell")
     with pytest.raises(AppError):
         _cloudflare_image_url("abc123", "@cf/../../evil")
+
+
+async def test_vlm_low_score_marks_illustration_low(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-vlm-low@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 1)
+    await configure_qwen(client, headers)
+    calls: List[int] = []
+
+    async def fake_qwen(
+        resolved: ResolvedProvider, **kwargs: Any
+    ) -> GeneratedImage:
+        calls.append(len(calls) + 1)
+        return GeneratedImage(
+            data=rich_webp_bytes(),
+            width=1024,
+            height=576,
+            provider_id="qwen",
+            model=str(kwargs["model"]),
+        )
+
+    async def fake_vlm(**kwargs: Any) -> VlmScore:
+        return VlmScore(score=32, issues=["readable text"], model="qwen-vl-max")
+
+    monkeypatch.setattr("app.services.images.generate_qwen_image", fake_qwen)
+    monkeypatch.setattr("app.services.images.score_illustration", fake_vlm)
+    monkeypatch.setattr(settings, "image_quality_vlm_enabled", True)
+
+    created = await client.post(
+        f"{API}/courses/{course_id}/classroom/scenes/{scene_ids[0]}/illustration",
+        headers=headers,
+        json={},
+    )
+    assert created.status_code == 202, created.text
+    finished = await job_state(client, headers, created.json()["id"])
+    assert finished["status"] == "completed", finished
+    assert len(calls) == 1
+
+    classroom = await client.get(
+        f"{API}/courses/{course_id}/classroom", headers=headers
+    )
+    quality = classroom.json()["scenes"][0]["content"]["illustration"]["quality"]
+    assert quality["status"] == "low"
+    assert quality["vlm"]["score"] == 32
+    assert quality["vlm"]["issues"] == ["readable text"]
+    assert quality["vlm"]["model"] == "qwen-vl-max"
+
+
+async def test_vlm_failure_keeps_heuristic_quality(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-vlm-skip@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 1)
+    await configure_qwen(client, headers)
+    calls: List[int] = []
+    install_fake_images(monkeypatch, calls)
+
+    async def failing_vlm(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.images.score_illustration", failing_vlm)
+    monkeypatch.setattr(settings, "image_quality_vlm_enabled", True)
+
+    created = await client.post(
+        f"{API}/courses/{course_id}/classroom/scenes/{scene_ids[0]}/illustration",
+        headers=headers,
+        json={},
+    )
+    assert created.status_code == 202, created.text
+    finished = await job_state(client, headers, created.json()["id"])
+    assert finished["status"] == "completed", finished
+
+    classroom = await client.get(
+        f"{API}/courses/{course_id}/classroom", headers=headers
+    )
+    quality = classroom.json()["scenes"][0]["content"]["illustration"]["quality"]
+    assert quality["status"] == "ok"
+    assert "vlm" not in quality
+
+
+def test_pollinations_seed_stays_within_signed_32bit() -> None:
+    seeds = {_pollinations_seed(f"prompt-{index}") for index in range(50)}
+    assert all(0 <= seed < 2**31 - 1 for seed in seeds)
+    assert _pollinations_seed("prompt", 0) != _pollinations_seed("prompt", 1)
+
+    url = _pollinations_url(
+        base_url="https://image.pollinations.ai/prompt",
+        prompt="p",
+        model="flux",
+        width=1024,
+        height=576,
+        seed=2**32 - 1,
+    )
+    assert f"seed={(2**32 - 1) % (2**31 - 1)}" in url
+
+
+async def test_pollinations_retries_transient_download_failure(
+    monkeypatch: Any,
+) -> None:
+    calls: List[str] = []
+    payload = rich_webp_bytes()
+
+    async def flaky_download(url: str, **kwargs: Any) -> bytes:
+        calls.append(url)
+        if len(calls) < 3:
+            raise AppError(
+                502,
+                "IMAGE_DOWNLOAD_FAILED",
+                "Generated image could not be downloaded (HTTP 404)",
+            )
+        return payload
+
+    monkeypatch.setattr("app.services.images._download_image", flaky_download)
+    monkeypatch.setattr("app.services.images.POLLINATIONS_RETRY_DELAY_SECONDS", 0)
+
+    generated = await generate_pollinations_image(
+        prompt="lesson art",
+        model="flux",
+        base_url="https://image.pollinations.ai/prompt",
+        width=1024,
+        height=576,
+        timeout=30,
+        max_bytes=25 * 1024 * 1024,
+        max_width=1600,
+        max_height=900,
+        webp_quality=82,
+    )
+
+    assert generated.provider_id == "pollinations"
+    assert len(calls) == 3
+    seeds = [int(url.split("seed=")[1].split("&")[0]) for url in calls]
+    assert len(set(seeds)) == 3
+    assert all(seed < 2**31 - 1 for seed in seeds)
+
+
+async def test_vlm_skips_after_consecutive_failures(monkeypatch: Any) -> None:
+    service = IllustrationService.__new__(IllustrationService)
+    service.db = None  # type: ignore[assignment]
+    service.settings = settings
+    service._vlm_skips = 0
+    image = GeneratedImage(
+        data=webp_bytes(),
+        width=320,
+        height=180,
+        provider_id="qwen",
+        model="qwen-image-3.0",
+    )
+    calls: List[int] = []
+
+    async def failing(**kwargs: Any) -> None:
+        calls.append(len(calls) + 1)
+        return None
+
+    monkeypatch.setattr("app.services.images.score_illustration", failing)
+
+    for _ in range(5):
+        image = await service._vlm_scored(image, owner=None, prompt="prompt")  # type: ignore[arg-type]
+
+    assert len(calls) == 2
+
+
+def test_download_status_error_maps_rate_limit() -> None:
+    limited = _download_status_error(402)
+    assert limited.status_code == 429
+    assert limited.code == "IMAGE_PROVIDER_RATE_LIMITED"
+    assert "45 seconds" in limited.message
+    assert _download_status_error(429).code == "IMAGE_PROVIDER_RATE_LIMITED"
+
+    missing = _download_status_error(404)
+    assert missing.status_code == 502
+    assert missing.code == "IMAGE_DOWNLOAD_FAILED"
+    assert "HTTP 404" in missing.message
+
+
+async def test_pollinations_rate_limit_is_not_retried(monkeypatch: Any) -> None:
+    calls: List[str] = []
+
+    async def limited(url: str, **kwargs: Any) -> bytes:
+        calls.append(url)
+        raise AppError(429, "IMAGE_PROVIDER_RATE_LIMITED", "free limit reached")
+
+    monkeypatch.setattr("app.services.images._download_image", limited)
+
+    with pytest.raises(AppError) as error:
+        await generate_pollinations_image(
+            prompt="lesson art",
+            model="flux",
+            base_url="https://image.pollinations.ai/prompt",
+            width=1024,
+            height=576,
+            timeout=30,
+            max_bytes=25 * 1024 * 1024,
+            max_width=1600,
+            max_height=900,
+            webp_quality=82,
+        )
+
+    assert error.value.code == "IMAGE_PROVIDER_RATE_LIMITED"
+    assert len(calls) == 1
+
+
+async def test_pollinations_sends_bearer_token(monkeypatch: Any) -> None:
+    seen: List[Any] = []
+    payload = rich_webp_bytes()
+
+    async def download(url: str, **kwargs: Any) -> bytes:
+        seen.append(kwargs.get("headers"))
+        return payload
+
+    monkeypatch.setattr("app.services.images._download_image", download)
+
+    await generate_pollinations_image(
+        prompt="lesson art",
+        model="flux",
+        base_url="https://image.pollinations.ai/prompt",
+        width=1024,
+        height=576,
+        timeout=30,
+        max_bytes=25 * 1024 * 1024,
+        max_width=1600,
+        max_height=900,
+        webp_quality=82,
+        token="pollen-abc",
+    )
+
+    assert seen == [{"Authorization": "Bearer pollen-abc"}]

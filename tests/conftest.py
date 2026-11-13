@@ -24,6 +24,10 @@ os.environ['COOKIE_SECURE'] = 'false'
 os.environ['LOG_LEVEL'] = 'WARNING'
 os.environ['EMAIL_DELIVERY'] = 'memory'
 os.environ['SMS_DELIVERY'] = 'memory'
+# Keeps tests offline: the local .env may enable the optional VLM scorer.
+os.environ['IMAGE_QUALITY_VLM_ENABLED'] = 'false'
+# Fallback behaviour is exercised by tests, so pin it regardless of .env.
+os.environ['IMAGE_FALLBACK_CHAIN'] = 'pollinations'
 TEST_ASSET_ROOT = Path(tempfile.mkdtemp(prefix='teachai-test-assets-'))
 os.environ['ASSET_STORAGE_ROOT'] = str(TEST_ASSET_ROOT)
 

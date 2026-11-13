@@ -12,7 +12,7 @@
 - 不勾选时仅保存配置信息，不做多厂商链式兜底；本地模型不可用时对已保存配置单次回退一次。
 - 响应解析失败不换厂商，同厂商重试一次。
 
-回归基线：后端 `pytest` 195 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 88 passed。任何新功能都必须在这条基线上不退化。
+回归基线：后端 `pytest` 221 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 96 passed。任何新功能都必须在这条基线上不退化。
 
 ## 非目标（明确不做）
 
@@ -69,7 +69,7 @@
 
 前端也已落地：注册页默认手机号、输入框下方小字「使用邮箱注册 / 使用手机号注册」切换（切换时清空格式不匹配的联系人）、验证码区标题随渠道变化；登录页单输入框「手机号或邮箱」；设置页与侧边栏改为 `email ?? phone` 展示。
 
-验收结果（阶段 4 联调，用 15398287367 走真实链路，`SMS_DELIVERY=log` 从日志取码）：发码 `202` 且返回 `153****7367`、注册 `201`、`identifier` 登录与 `/auth/me` 均返回脱敏手机号、重复号码 `409`、双字段 `422`、错误密码 `401`；浏览器端登录注册切换、字段校验、登录回跳 `/library`、设置页与侧边栏展示脱敏号码均正常，无控制台错误。后端 185 passed、前端 86 passed。
+验收结果（阶段 4 联调，用 153****7367 走真实链路，`SMS_DELIVERY=log` 从日志取码）：发码 `202` 且返回 `153****7367`、注册 `201`、`identifier` 登录与 `/auth/me` 均返回脱敏手机号、重复号码 `409`、双字段 `422`、错误密码 `401`；浏览器端登录注册切换、字段校验、登录回跳 `/library`、设置页与侧边栏展示脱敏号码均正常，无控制台错误。后端 185 passed、前端 86 passed。
 
 ## P2：体验与稳定性
 
@@ -77,11 +77,11 @@
 
 - 短信防刷（已完成）：手机号渠道在 60 秒冷却之外叠加 IP 与号码双维度滑动窗口限流——同一 IP 每分钟 3 次、每小时 10 次，同一号码每小时 5 次（`SMS_IP_LIMIT_PER_MINUTE` / `SMS_IP_LIMIT_PER_HOUR` / `SMS_TARGET_LIMIT_PER_HOUR`），超限返回 `429 SMS_SEND_RATE_LIMITED` 并带 `details.retry_after`。计数表 `verification_send_logs`，迁移 `0016_sms_send_logs`；邮箱渠道不受影响。
 - 合理措辞（已完成）：回答上方的幕次标题按幕次分组，同一幕内连续问答只在幕切换时显示一次「第 N 幕 · 标题」，切换后显示新幕标题；不再每次回答重复同一标题。
+- 配图质量（已完成）：新增 `app/services/image_quality.py` 本地启发式评分（分辨率、模糊、曝光、截断、纯色、色数），低分时同 Provider 用变体提示词重试 `IMAGE_QUALITY_RETRY`（默认 1）次，结果写入 `media_metadata.quality` 与 `content.illustration.quality`；`status=low` 的资产不再缓存复用。课堂右侧面板新增质量分/低分提示与图片 Provider 选择（Qwen 默认、Pollinations 免费兜底、HuggingFace/Cloudflare 需服务端 Token）。另可选 VLM 语义复核（`IMAGE_QUALITY_VLM_ENABLED`，默认关闭）：复用用户自己的 Qwen 配置只评最终候选图，任何失败静默跳过，低于阈值仍标记 `low`。
 - 运维可观（已完成）：`app/core/metrics.py` 在进程内按 Provider 与任务类型计数；每次模型调用输出 `llm_call_completed`（provider/model/outcome/duration_ms），每次生成任务结束输出 `generation_job_finished`（job_id/kind/outcome/duration_ms），并按 `METRICS_SNAPSHOT_SECONDS`（默认 300，0 关闭）输出 `metrics_snapshot` 聚合行（calls/failures/failure_rate/avg_ms/max_ms）。
 
 待办：
 
 - 任务队列：当前生成任务用 FastAPI `BackgroundTasks` 在进程内执行，进程重启会中断（已有 `recover_interrupted_jobs` 兜底标记失败）。可评估独立 worker + 队列（Redis/RQ）以支持多副本与重试。
 - 公网接入：`cpolar` 免费额度带宽与稳定性有限，上传大文件等长任务易超时与断流，更换 frp TCP 透传或者内网 443 端口映射。
-- 配图质量：引入图片生成质量评估与可选正式图片服务商（当前 Qwen Image 主通道 + 免费兜底）。
 - 优化项目：继续发现项目其他一些可以优化的地方。

@@ -151,6 +151,49 @@ Qwen 的 TTS Base URL 指向 DashScope 官方根地址时使用原生 `multimoda
 
 缓存键由 `provider + model + prompt + 目标尺寸 + webp` 计算。相同内容重复请求会复用已落盘图片；传 `regenerate: true` 会覆盖原资产并保持同一个 `mediaId`。每页最多 1 张，由 `media_assets` 唯一约束兜底。
 
+接口接受 `provider_id`（`qwen` / `pollinations` / `huggingface` / `cloudflare`）；课堂右侧面板可在生成前选择，未选择时按 `IMAGE_PROVIDER_ID` + `IMAGE_FALLBACK_CHAIN` 自动降级。`huggingface` 与 `cloudflare` 需要在服务端配置 Token，否则任务直接失败。
+
+
+pollinations 免费层限制为每 IP 每 45 秒 1 张图，超限返回 `402 FREE_LIMIT`（部分情况表现为 `404`）。服务端把它映射为 `429 IMAGE_PROVIDER_RATE_LIMITED` 并立即失败、不再重试；批量出图请使用 Qwen（`IMAGE_FALLBACK_CHAIN`默认置空），或 `IMAGE_POLLINATIONS_TOKEN` 填 pollen key 解锁额度（以 `Authorization: Bearer` 发送）。`404` 与超时仍会在同一 Provider 内换 seed 重试 3 次。
+
+### 配图质量评估
+
+出图后在归一化后的 WebP 上做本地启发式评分（`app/services/image_quality.py`，纯 Pillow，无模型调用），输出 0–100 分与原因码：
+
+- `low_resolution`：小于 480×270，直接封顶 40 分。
+- `blurry_or_flat`：边缘方差 < 25。
+- `exposure`：平均亮度不在 25–232。
+- `clipped`：过曝或欠曝像素占比 > 50%。
+- `near_solid`：32×32 采样后主色占比 > 85%。
+- `monochrome`：量化后色数 < 6。
+- `unreadable`：不是可解析的图片，直接 0 分。
+
+低于 `IMAGE_QUALITY_MIN_SCORE`（默认 60）时，同一 Provider 用变体提示词重试 `IMAGE_QUALITY_RETRY`（默认 1）次；Pollinations 的 seed 由提示词派生，重试会自动换图。全部尝试仍低分时保留分数最高的一张，不切换 Provider，也不阻断任务。
+
+评分写入 `media_assets.media_metadata.quality` 并同步到 `content.illustration.quality`：
+
+```json
+{
+  "score": 92,
+  "status": "ok",
+  "reasons": [],
+  "metrics": {"edge_variance": 218.7, "dominant_share": 0.097, "color_count": 16}
+}
+```
+
+`status=low` 的资产不会被缓存复用，下次请求会重新生成；没有 `quality` 字段的历史资产视为可用。`IMAGE_QUALITY_ENABLED=false` 时跳过评分与重试，行为与引入前一致。
+
+### 可选 VLM 语义评分
+
+`IMAGE_QUALITY_VLM_ENABLED=true` 时，启发式评分之后还会把最终候选图交给 Qwen VL 复核一次：插画是否切题、是否出现可读文字/水印/边框、构图是否完整。
+
+- 只复用用户自己保存的 `qwen` 配置（`IMAGE_QUALITY_VLM_PROVIDER_ID` 目前仅支持 `qwen`），不读全局 Key，也不跨厂商回退。
+- 只评最终候选图，不额外触发重试：多 5–15 秒延迟，但不会放大出图次数。VLM 分数低于 `IMAGE_QUALITY_MIN_SCORE` 时把 `status` 置为 `low`，该图不进入缓存复用，用户重新生成即换新图。
+- 任何失败（未配置凭据、超时、返回无法解析）只写日志并跳过，保留启发式结果，不影响出图。
+- 结果写入 `quality.vlm`：`{"score": 92, "issues": ["..."], "model": "qwen3-vl-plus"}`；前端在低分时列出 issues（最多 3 条）。
+- 默认关闭，关闭时行为与仅启发式评分完全一致。
+
+
 ## 作答与判分
 
 作答与项目任务记录在 `classroom_responses`，按 `owner_id + scene_id + target_id` 唯一，重复提交会覆盖而不是追加。判分规则：
@@ -191,6 +234,14 @@ IMAGE_TARGET_WIDTH=1024
 IMAGE_TARGET_HEIGHT=576
 IMAGE_POLLINATIONS_BASE_URL=https://image.pollinations.ai/prompt
 IMAGE_POLLINATIONS_MODEL=flux
+IMAGE_POLLINATIONS_TOKEN=
+IMAGE_QUALITY_ENABLED=true
+IMAGE_QUALITY_MIN_SCORE=60
+IMAGE_QUALITY_RETRY=1
+IMAGE_QUALITY_VLM_ENABLED=false
+IMAGE_QUALITY_VLM_PROVIDER_ID=qwen
+IMAGE_QUALITY_VLM_MODEL=qwen3-vl-plus
+IMAGE_QUALITY_VLM_TIMEOUT_SECONDS=45
 ```
 
 ## 真实模型诊断
