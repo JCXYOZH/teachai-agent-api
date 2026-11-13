@@ -14,7 +14,7 @@ from app.schemas.outline import (
     OutlineSaveRequest,
 )
 from app.services import generation_jobs
-from app.services.generation_runner import run_generation_job
+from app.services.generation_queue import schedule_generation_job
 from app.services.outlines import OutlineService
 
 router = APIRouter(prefix="/courses", tags=["outlines"])
@@ -37,8 +37,8 @@ async def generate_outline(
     service: OutlineService = Depends(get_outline_service),
 ) -> GenerationJobView:
     job = await service.create_job(current_user, course_id, payload)
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_OUTLINE
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_OUTLINE
     )
     return job
 

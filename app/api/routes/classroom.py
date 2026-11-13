@@ -24,7 +24,7 @@ from app.services import generation_jobs
 from app.services.classroom_responses import ClassroomResponseService
 from app.services.classrooms import ClassroomService
 from app.services.exports import ClassroomExportService
-from app.services.generation_runner import run_generation_job
+from app.services.generation_queue import schedule_generation_job
 from app.services.images import IllustrationService
 from app.services.narrations import NarrationService
 
@@ -73,8 +73,8 @@ async def generate_classroom(
     service: ClassroomService = Depends(get_classroom_service),
 ) -> GenerationJobView:
     job = await service.create_job(current_user, course_id, payload)
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_CLASSROOM
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_CLASSROOM
     )
     return job
 
@@ -105,8 +105,8 @@ async def generate_classroom_narration(
         course_id,
         payload or NarrationGenerateRequest(),
     )
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_NARRATION
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_NARRATION
     )
     return job
 
@@ -130,8 +130,8 @@ async def generate_scene_narration(
         payload or NarrationGenerateRequest(),
         scene_id=scene_id,
     )
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_NARRATION
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_NARRATION
     )
     return job
 
@@ -153,8 +153,8 @@ async def generate_classroom_illustrations(
         course_id,
         payload or IllustrationGenerateRequest(),
     )
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_IMAGE
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_IMAGE
     )
     return job
 
@@ -178,8 +178,8 @@ async def generate_scene_illustration(
         payload or IllustrationGenerateRequest(),
         scene_id=scene_id,
     )
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_IMAGE
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_IMAGE
     )
     return job
 
@@ -199,8 +199,8 @@ async def export_classroom(
     job = await service.create_job(
         current_user, course_id, payload or ClassroomExportRequest()
     )
-    background_tasks.add_task(
-        run_generation_job, job.id, generation_jobs.JOB_KIND_EXPORT
+    await schedule_generation_job(
+        background_tasks, job.id, generation_jobs.JOB_KIND_EXPORT
     )
     return job
 

@@ -220,6 +220,31 @@ sudo firewall-cmd --reload
 
 注意：直连 65534 会绕过 TLS，refresh cookie 带 `Secure` 不会在 http 下生效，正常用户必须走 `https://ai.offer.us.ci`。
 
+## 生成任务队列
+
+大纲、课堂、旁白、配图与导出的生成任务不再交给 FastAPI `BackgroundTasks`，而是先写入 `generation_jobs`
+表，再由进程内的 worker 池认领执行（`app/services/generation_queue.py`，与 API 同进程）。
+
+- 认领：`SELECT ... WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`，
+  同一事务内置 `running`，因此多副本不会重复执行同一个任务，也无需 Redis。
+- 重启恢复：启动时把遗留 `running` 任务重新入队并给 `payload.attempts` 加一；只有超过
+  `GENERATION_JOB_MAX_ATTEMPTS` 才置 `failed`（`GENERATION_INTERRUPTED`）。
+- 崩溃兜底：每 60 秒扫描一次 `running` 且 `updated_at` 超过 `GENERATION_JOB_STALE_SECONDS` 的任务，
+  回队列或按尝试次数置失败的终态。
+- 单副本（当前部署）：`GENERATION_JOB_STARTUP_GRACE_SECONDS=0`，重启后立即回收；多副本滚动重启时
+  把它设成大于最长任务时长（例如 1800），避免抢走其他副本仍在执行的任务。
+- 回退：`GENERATION_QUEUE_ENABLED=false` 退回 `BackgroundTasks`，仅用于单进程调试。
+- 队列复用现有 `generation_jobs` 表，不新增迁移；升级时仍需先 `alembic upgrade head`。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `GENERATION_QUEUE_ENABLED` | `true` | 是否启用进程内队列 |
+| `GENERATION_WORKER_CONCURRENCY` | `1` | 并发任务数（1–8）；llama.cpp 单实例与图片供应商限流下不建议调高 |
+| `GENERATION_QUEUE_POLL_SECONDS` | `1` | 空闲时的轮询间隔（0.1–30） |
+| `GENERATION_JOB_STALE_SECONDS` | `1800` | `running` 任务判定为超时的秒数（60–86400） |
+| `GENERATION_JOB_STARTUP_GRACE_SECONDS` | `0` | 启动回收的宽限秒数（0–86400） |
+| `GENERATION_JOB_MAX_ATTEMPTS` | `2` | 单个任务最多执行次数（1–5） |
+
 ## 验收清单
 
 1. `curl -fsS https://ai.offer.us.ci/api/v1/health` 返回 `status=ok`。

@@ -28,6 +28,8 @@ os.environ['SMS_DELIVERY'] = 'memory'
 os.environ['IMAGE_QUALITY_VLM_ENABLED'] = 'false'
 # Fallback behaviour is exercised by tests, so pin it regardless of .env.
 os.environ['IMAGE_FALLBACK_CHAIN'] = 'pollinations'
+# Tests drive the BackgroundTasks path; the worker pool needs a lifespan.
+os.environ['GENERATION_QUEUE_ENABLED'] = 'false'
 TEST_ASSET_ROOT = Path(tempfile.mkdtemp(prefix='teachai-test-assets-'))
 os.environ['ASSET_STORAGE_ROOT'] = str(TEST_ASSET_ROOT)
 

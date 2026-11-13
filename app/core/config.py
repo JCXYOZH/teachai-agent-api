@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     image_quality_vlm_provider_id: str = "qwen"
     image_quality_vlm_model: str = "qwen3-vl-plus"
     image_quality_vlm_timeout_seconds: float = 45.0
+    # In-process generation worker pool backed by the generation_jobs table.
+    generation_queue_enabled: bool = True
+    generation_worker_concurrency: int = 1
+    generation_queue_poll_seconds: float = 1.0
+    generation_job_stale_seconds: int = 1800
+    generation_job_startup_grace_seconds: int = 0
+    generation_job_max_attempts: int = 2
     export_max_bytes: int = 40 * 1024 * 1024
     openai_api_key: str = ""
     anthropic_api_key: str = ""
@@ -275,6 +282,18 @@ class Settings(BaseSettings):
                 raise ValueError("IMAGE_QUALITY_VLM_PROVIDER_ID must be qwen")
             if not self.image_quality_vlm_model.strip():
                 raise ValueError("IMAGE_QUALITY_VLM_MODEL must not be empty")
+        if not 1 <= self.generation_worker_concurrency <= 8:
+            raise ValueError("GENERATION_WORKER_CONCURRENCY must be between 1 and 8")
+        if not 0.1 <= self.generation_queue_poll_seconds <= 30:
+            raise ValueError("GENERATION_QUEUE_POLL_SECONDS must be between 0.1 and 30")
+        if not 60 <= self.generation_job_stale_seconds <= 86400:
+            raise ValueError("GENERATION_JOB_STALE_SECONDS must be between 60 and 86400")
+        if not 0 <= self.generation_job_startup_grace_seconds <= 86400:
+            raise ValueError(
+                "GENERATION_JOB_STARTUP_GRACE_SECONDS must be between 0 and 86400"
+            )
+        if not 1 <= self.generation_job_max_attempts <= 5:
+            raise ValueError("GENERATION_JOB_MAX_ATTEMPTS must be between 1 and 5")
         return self
 
     @property

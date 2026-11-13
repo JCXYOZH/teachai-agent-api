@@ -12,7 +12,7 @@
 - 不勾选时仅保存配置信息，不做多厂商链式兜底；本地模型不可用时对已保存配置单次回退一次。
 - 响应解析失败不换厂商，同厂商重试一次。
 
-回归基线：后端 `pytest` 221 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 96 passed。任何新功能都必须在这条基线上不退化。
+回归基线：后端 `pytest` 229 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 96 passed。任何新功能都必须在这条基线上不退化。
 
 ## 非目标（明确不做）
 
@@ -79,9 +79,9 @@
 - 合理措辞（已完成）：回答上方的幕次标题按幕次分组，同一幕内连续问答只在幕切换时显示一次「第 N 幕 · 标题」，切换后显示新幕标题；不再每次回答重复同一标题。
 - 配图质量（已完成）：新增 `app/services/image_quality.py` 本地启发式评分（分辨率、模糊、曝光、截断、纯色、色数），低分时同 Provider 用变体提示词重试 `IMAGE_QUALITY_RETRY`（默认 1）次，结果写入 `media_metadata.quality` 与 `content.illustration.quality`；`status=low` 的资产不再缓存复用。课堂右侧面板新增质量分/低分提示与图片 Provider 选择（Qwen 默认、Pollinations 免费兜底、HuggingFace/Cloudflare 需服务端 Token）。另可选 VLM 语义复核（`IMAGE_QUALITY_VLM_ENABLED`，默认关闭）：复用用户自己的 Qwen 配置只评最终候选图，任何失败静默跳过，低于阈值仍标记 `low`。
 - 运维可观（已完成）：`app/core/metrics.py` 在进程内按 Provider 与任务类型计数；每次模型调用输出 `llm_call_completed`（provider/model/outcome/duration_ms），每次生成任务结束输出 `generation_job_finished`（job_id/kind/outcome/duration_ms），并按 `METRICS_SNAPSHOT_SECONDS`（默认 300，0 关闭）输出 `metrics_snapshot` 聚合行（calls/failures/failure_rate/avg_ms/max_ms）。
+- 任务队列（已完成）：生成任务改由 `generation_jobs` 表驱动的进程内 worker 池执行（`app/services/generation_queue.py`），worker 以 `SELECT ... FOR UPDATE SKIP LOCKED` 认领任务，不需要 Redis 且多副本不会重复执行；进程重启后遗留 `running` 任务自动回队列，`payload.attempts` 累加，超过 `GENERATION_JOB_MAX_ATTEMPTS`（默认 2）才置 `GENERATION_INTERRUPTED`；每 60 秒扫描一次 `stale` 任务兜底副本崩溃；`GENERATION_QUEUE_ENABLED=false` 时退回 `BackgroundTasks`。新增 8 个测试。
 
 待办：
 
-- 任务队列：当前生成任务用 FastAPI `BackgroundTasks` 在进程内执行，进程重启会中断（已有 `recover_interrupted_jobs` 兜底标记失败）。可评估独立 worker + 队列（Redis/RQ）以支持多副本与重试。
 - 公网接入：`cpolar` 免费额度带宽与稳定性有限，上传大文件等长任务易超时与断流，更换 frp TCP 透传或者内网 443 端口映射。
 - 优化项目：继续发现项目其他一些可以优化的地方。

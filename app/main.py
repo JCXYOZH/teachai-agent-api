@@ -30,6 +30,7 @@ from app.core.middleware import RequestContextMiddleware, ServerErrorShieldMiddl
 from app.db.session import engine
 from app.services.auth import purge_stale_verifications
 from app.services.generation_jobs import recover_interrupted_jobs
+from app.services.generation_queue import get_generation_queue
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -63,10 +64,16 @@ async def _check_schema_revision() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _check_schema_revision()
-    try:
-        await recover_interrupted_jobs()
-    except Exception:
-        logger.exception("generation_job_recovery_failed")
+    if settings.generation_queue_enabled:
+        try:
+            await get_generation_queue().start()
+        except Exception:
+            logger.exception("generation_queue_start_failed")
+    else:
+        try:
+            await recover_interrupted_jobs()
+        except Exception:
+            logger.exception("generation_job_recovery_failed")
     try:
         purged = await purge_stale_verifications()
         if purged:
@@ -74,6 +81,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logger.exception("email_verification_purge_failed")
     yield
+    if settings.generation_queue_enabled:
+        try:
+            await get_generation_queue().stop()
+        except Exception:
+            logger.exception("generation_queue_stop_failed")
     await engine.dispose()
 
 
