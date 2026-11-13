@@ -248,3 +248,19 @@ async def get_generation_job(
     service: ClassroomService = Depends(get_classroom_service),
 ) -> GenerationJobView:
     return await service.get_job(current_user, job_id)
+
+
+@generation_router.post(
+    "/jobs/{job_id}/retry",
+    response_model=GenerationJobView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def retry_generation_job(
+    job_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> GenerationJobView:
+    job = await generation_jobs.retry_job(db, current_user, job_id)
+    await schedule_generation_job(background_tasks, job.id, job.kind)
+    return generation_jobs.job_view(job)

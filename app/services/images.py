@@ -9,7 +9,7 @@ import re
 import socket
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.db.session import AsyncSessionLocal
 from app.models.classroom import CourseScene, CourseStage, GenerationJob
 from app.models.course import Course
 from app.models.media import MediaAsset
@@ -42,7 +43,8 @@ QWEN_PROVIDER_ID = "qwen"
 POLLINATIONS_PROVIDER_ID = "pollinations"
 POLLINATIONS_SEED_LIMIT = 2 ** 31 - 1
 POLLINATIONS_MAX_ATTEMPTS = 3
-POLLINATIONS_RETRY_DELAY_SECONDS = 1.0
+POLLINATIONS_RETRY_DELAY_SECONDS = 2.0
+MAX_DOWNLOAD_REDIRECTS = 2
 POLLINATIONS_RETRY_CODES = frozenset(
     {"IMAGE_DOWNLOAD_FAILED", "IMAGE_TIMEOUT", "IMAGE_INVALID_RESPONSE"}
 )
@@ -76,12 +78,24 @@ class GeneratedImage:
     quality: Optional[Dict[str, Any]] = None
 
 
+class _VlmBreaker:
+    """Shared across parallel scene tasks so one dead VLM stops all of them."""
+
+    def __init__(self) -> None:
+        self.skips = 0
+
+
 class IllustrationService:
-    def __init__(self, db: AsyncSession, settings: Settings) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        settings: Settings,
+        vlm_breaker: Optional[_VlmBreaker] = None,
+    ) -> None:
         self.db = db
         self.settings = settings
         self.storage = LocalMediaStorage(settings)
-        self._vlm_skips = 0
+        self._vlm_breaker = vlm_breaker or _VlmBreaker()
 
     async def create_job(
         self,
@@ -184,26 +198,45 @@ class IllustrationService:
             reused = 0
             actual_provider: Optional[str] = None
             actual_model: Optional[str] = None
-            for index, scene in enumerate(scenes, start=1):
-                await generation_jobs.mark_progress(
-                    self.db,
-                    job_id,
-                    progress=5 + int(88 * (index - 1) / total),
-                    message=f"Illustrating scene {index}/{total}",
+            semaphore = asyncio.Semaphore(max(1, self.settings.image_concurrency))
+            breaker = _VlmBreaker()
+            tasks = [
+                asyncio.ensure_future(
+                    self._illustrate_isolated(
+                        semaphore,
+                        vlm_breaker=breaker,
+                        owner_id=owner.id,
+                        course_id=course.id,
+                        stage_id=stage.id,
+                        scene_id=scene.id,
+                        payload=job.payload,
+                    )
                 )
-                outcome, provider_id, model = await self._illustrate_scene(
-                    owner=owner,
-                    course=course,
-                    stage=stage,
-                    scene=scene,
-                    payload=job.payload,
-                )
-                if outcome == "generated":
-                    generated += 1
-                else:
-                    reused += 1
-                actual_provider = provider_id
-                actual_model = model
+                for scene in scenes
+            ]
+            try:
+                for done_count, finished in enumerate(
+                    asyncio.as_completed(tasks), start=1
+                ):
+                    outcome, provider_id, model = await finished
+                    if outcome == "generated":
+                        generated += 1
+                    else:
+                        reused += 1
+                    actual_provider = provider_id
+                    actual_model = model
+                    await generation_jobs.mark_progress(
+                        self.db,
+                        job_id,
+                        progress=5 + int(88 * done_count / total),
+                        message=f"Illustrated {done_count}/{total} scene(s)",
+                    )
+            finally:
+                pending = [task for task in tasks if not task.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
             if actual_provider:
                 job.provider_id = actual_provider
@@ -241,6 +274,39 @@ class IllustrationService:
                 "IMAGE_GENERATION_FAILED",
                 "Illustration generation failed",
             )
+
+    async def _illustrate_isolated(
+        self,
+        semaphore: asyncio.Semaphore,
+        *,
+        vlm_breaker: _VlmBreaker,
+        owner_id: UUID,
+        course_id: UUID,
+        stage_id: UUID,
+        scene_id: UUID,
+        payload: Dict[str, Any],
+    ) -> Tuple[str, str, str]:
+        """Illustrate one scene in its own session so scenes can run in parallel."""
+        async with semaphore:
+            async with AsyncSessionLocal() as db:
+                service = IllustrationService(db, self.settings, vlm_breaker)
+                owner = await db.get(User, owner_id)
+                course = await db.get(Course, course_id)
+                stage = await db.get(CourseStage, stage_id)
+                scene = await db.get(CourseScene, scene_id)
+                if owner is None or course is None or stage is None or scene is None:
+                    raise AppError(
+                        404,
+                        "CLASSROOM_NOT_FOUND",
+                        "Classroom scene is no longer available",
+                    )
+                return await service._illustrate_scene(
+                    owner=owner,
+                    course=course,
+                    stage=stage,
+                    scene=scene,
+                    payload=payload,
+                )
 
     async def _illustrate_scene(
         self,
@@ -461,7 +527,7 @@ class IllustrationService:
         self, image: GeneratedImage, *, owner: User, prompt: str
     ) -> GeneratedImage:
         settings = self.settings
-        if self._vlm_skips >= VLM_MAX_CONSECUTIVE_FAILURES:
+        if self._vlm_breaker.skips >= VLM_MAX_CONSECUTIVE_FAILURES:
             return image
         vlm = await score_illustration(
             db=self.db,
@@ -471,9 +537,9 @@ class IllustrationService:
             prompt=prompt,
         )
         if vlm is None:
-            self._vlm_skips += 1
+            self._vlm_breaker.skips += 1
             return image
-        self._vlm_skips = 0
+        self._vlm_breaker.skips = 0
         quality = dict(image.quality or {})
         quality["vlm"] = {
             "score": vlm.score,
@@ -571,6 +637,11 @@ class IllustrationService:
                 max_height=settings.image_max_height,
                 webp_quality=settings.image_webp_quality,
                 token=settings.image_pollinations_token,
+                min_interval_seconds=(
+                    0.0
+                    if settings.image_pollinations_token
+                    else settings.image_pollinations_min_interval_seconds
+                ),
             )
         if provider_id == HUGGINGFACE_PROVIDER_ID:
             return await generate_huggingface_image(
@@ -864,6 +935,7 @@ async def generate_pollinations_image(
     max_height: int,
     webp_quality: int,
     token: str = "",
+    min_interval_seconds: float = 0.0,
 ) -> GeneratedImage:
     headers = {"Authorization": "Bearer " + token} if token else None
     data: Optional[bytes] = None
@@ -877,6 +949,7 @@ async def generate_pollinations_image(
             height=height,
             seed=seed,
         )
+        await _wait_for_pollinations_slot(min_interval_seconds)
         try:
             data = await _download_image(
                 url, timeout=timeout, max_bytes=max_bytes, headers=headers
@@ -885,14 +958,14 @@ async def generate_pollinations_image(
         except AppError as exc:
             retryable = exc.code in POLLINATIONS_RETRY_CODES
             if not retryable or attempt == POLLINATIONS_MAX_ATTEMPTS - 1:
-                raise
+                raise _pollinations_error(exc) from exc
             logger.warning(
                 "image_pollinations_retry attempt=%s code=%s seed=%s",
                 attempt + 1,
                 exc.code,
                 seed,
             )
-            await asyncio.sleep(POLLINATIONS_RETRY_DELAY_SECONDS * (attempt + 1))
+            await asyncio.sleep(POLLINATIONS_RETRY_DELAY_SECONDS * (2**attempt))
     if data is None:
         raise AppError(
             502, "IMAGE_DOWNLOAD_FAILED", "Generated image could not be downloaded"
@@ -1182,6 +1255,34 @@ def _qwen_image_generation_url(base_url: str) -> str:
     )
 
 
+_pollinations_gate = asyncio.Lock()
+_next_pollinations_call_at = 0.0
+
+
+async def _wait_for_pollinations_slot(interval_seconds: float) -> None:
+    """Space out free-tier pollinations calls so they stop answering 402."""
+    global _next_pollinations_call_at
+    if interval_seconds <= 0:
+        return
+    async with _pollinations_gate:
+        loop = asyncio.get_event_loop()
+        wait_seconds = _next_pollinations_call_at - loop.time()
+        if wait_seconds > 0:
+            logger.info("image_pollinations_wait seconds=%.1f", wait_seconds)
+            await asyncio.sleep(wait_seconds)
+        _next_pollinations_call_at = loop.time() + interval_seconds
+
+
+def _pollinations_error(exc: AppError) -> AppError:
+    if exc.code == "IMAGE_PROVIDER_RATE_LIMITED":
+        return exc
+    hint = (
+        "pollinations 免费层不稳定：可在 .env 配置 IMAGE_POLLINATIONS_TOKEN，"
+        "或在课堂右侧把配图 Provider 换成 qwen。"
+    )
+    return AppError(exc.status_code, exc.code, f"{exc.message}. {hint}")
+
+
 def _pollinations_seed(prompt: str, attempt: int = 0) -> int:
     digest = int(hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8], 16)
     return (digest + attempt * 104729) % POLLINATIONS_SEED_LIMIT
@@ -1264,6 +1365,29 @@ async def _download_image(
     max_bytes: int,
     headers: Optional[Dict[str, str]] = None,
 ) -> bytes:
+    target = url
+    for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
+        data, redirect = await _download_once(
+            target, timeout=timeout, max_bytes=max_bytes, headers=headers
+        )
+        if redirect is None:
+            return data
+        logger.info("image_download_redirect target=%s", redirect)
+        target = redirect
+    raise AppError(
+        502,
+        "IMAGE_DOWNLOAD_FAILED",
+        "Generated image redirected too many times",
+    )
+
+
+async def _download_once(
+    url: str,
+    *,
+    timeout: float,
+    max_bytes: int,
+    headers: Optional[Dict[str, str]] = None,
+) -> Tuple[bytes, Optional[str]]:
     await _validate_download_url(url)
     try:
         async with httpx.AsyncClient(
@@ -1272,6 +1396,11 @@ async def _download_image(
             trust_env=False,
         ) as client:
             async with client.stream("GET", url, headers=headers) as response:
+                if 300 <= response.status_code < 400:
+                    location = response.headers.get("location")
+                    if location:
+                        return b"", urljoin(url, location)
+                    raise _download_status_error(response.status_code)
                 if response.status_code != 200:
                     if response.status_code < 500:
                         body = (await response.aread())[:200]
@@ -1307,7 +1436,7 @@ async def _download_image(
         ) from exc
     if not buffer:
         raise AppError(502, "IMAGE_INVALID_RESPONSE", "Generated image is empty")
-    return bytes(buffer)
+    return bytes(buffer), None
 
 
 async def _validate_download_url(url: str) -> None:

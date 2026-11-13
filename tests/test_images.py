@@ -16,11 +16,13 @@ from app.models.classroom import CourseScene, CourseStage
 from app.models.media import MediaAsset
 from app.services.image_vlm import VlmScore
 from app.services.images import (
+    MAX_DOWNLOAD_REDIRECTS,
     GeneratedImage,
     IllustrationService,
     _cloudflare_image_url,
     _content_hash,
     _decode_data_uri,
+    _download_image,
     _download_status_error,
     _image_bytes_from_string,
     _pollinations_seed,
@@ -28,6 +30,7 @@ from app.services.images import (
     _qwen_image_generation_url,
     _qwen_image_source,
     _validate_download_url,
+    _VlmBreaker,
     generate_pollinations_image,
     normalize_image,
 )
@@ -784,6 +787,62 @@ def test_pollinations_seed_stays_within_signed_32bit() -> None:
     assert f"seed={(2**32 - 1) % (2**31 - 1)}" in url
 
 
+async def test_download_image_follows_redirect(monkeypatch: Any) -> None:
+    payload = rich_webp_bytes()
+    urls: List[str] = []
+
+    async def fake_download_once(url: str, **kwargs: Any) -> Any:
+        urls.append(url)
+        if len(urls) == 1:
+            return b"", "https://cdn.example.com/art.png"
+        return payload, None
+
+    async def allow_url(url: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.images._validate_download_url", allow_url)
+    monkeypatch.setattr("app.services.images._download_once", fake_download_once)
+
+    data = await _download_image(
+        "https://image.pollinations.ai/prompt/test",
+        timeout=1,
+        max_bytes=1024,
+    )
+
+    assert data == payload
+    assert urls == [
+        "https://image.pollinations.ai/prompt/test",
+        "https://cdn.example.com/art.png",
+    ]
+
+
+async def test_download_image_stops_after_too_many_redirects(
+    monkeypatch: Any,
+) -> None:
+    urls: List[str] = []
+
+    async def redirect_forever(url: str, **kwargs: Any) -> Any:
+        urls.append(url)
+        return b"", f"https://cdn.example.com/{len(urls)}.png"
+
+    async def allow_url(url: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.images._validate_download_url", allow_url)
+    monkeypatch.setattr("app.services.images._download_once", redirect_forever)
+
+    with pytest.raises(AppError) as error:
+        await _download_image(
+            "https://image.pollinations.ai/prompt/test",
+            timeout=1,
+            max_bytes=1024,
+        )
+
+    assert error.value.code == "IMAGE_DOWNLOAD_FAILED"
+    assert "redirected too many times" in error.value.message
+    assert len(urls) == MAX_DOWNLOAD_REDIRECTS + 1
+
+
 async def test_pollinations_retries_transient_download_failure(
     monkeypatch: Any,
 ) -> None:
@@ -823,11 +882,46 @@ async def test_pollinations_retries_transient_download_failure(
     assert all(seed < 2**31 - 1 for seed in seeds)
 
 
+async def test_pollinations_failure_includes_actionable_hint(
+    monkeypatch: Any,
+) -> None:
+    calls: List[str] = []
+
+    async def missing_download(url: str, **kwargs: Any) -> bytes:
+        calls.append(url)
+        raise AppError(
+            502,
+            "IMAGE_DOWNLOAD_FAILED",
+            "Generated image could not be downloaded (HTTP 404)",
+        )
+
+    monkeypatch.setattr("app.services.images._download_image", missing_download)
+    monkeypatch.setattr("app.services.images.POLLINATIONS_RETRY_DELAY_SECONDS", 0)
+
+    with pytest.raises(AppError) as error:
+        await generate_pollinations_image(
+            prompt="lesson art",
+            model="flux",
+            base_url="https://image.pollinations.ai/prompt",
+            width=1024,
+            height=576,
+            timeout=30,
+            max_bytes=25 * 1024 * 1024,
+            max_width=1600,
+            max_height=900,
+            webp_quality=82,
+        )
+
+    assert len(calls) == 3
+    assert "IMAGE_POLLINATIONS_TOKEN" in error.value.message
+    assert "qwen" in error.value.message
+
+
 async def test_vlm_skips_after_consecutive_failures(monkeypatch: Any) -> None:
     service = IllustrationService.__new__(IllustrationService)
     service.db = None  # type: ignore[assignment]
     service.settings = settings
-    service._vlm_skips = 0
+    service._vlm_breaker = _VlmBreaker()
     image = GeneratedImage(
         data=webp_bytes(),
         width=320,

@@ -245,6 +245,10 @@ sudo firewall-cmd --reload
 | `GENERATION_JOB_STARTUP_GRACE_SECONDS` | `0` | 启动回收的宽限秒数（0–86400） |
 | `GENERATION_JOB_MAX_ATTEMPTS` | `2` | 单个任务最多执行次数（1–5） |
 
+配图任务按 `IMAGE_CONCURRENCY`（默认 `2`，范围 1–6）并行执行；免费图片供应商按 IP 限流，调高前先确认配额，否则会集中触发 `IMAGE_PROVIDER_RATE_LIMITED`。
+
+Pollinations 免费层默认按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默认 45 秒，范围 0–300）在进程内串行；配置 `IMAGE_POLLINATIONS_TOKEN` 后可设为 0。多副本部署时各进程独立计数，生产建议配置 Token 或改用 Qwen。
+
 ## 验收清单
 
 1. `curl -fsS https://ai.offer.us.ci/api/v1/health` 返回 `status=ok`。

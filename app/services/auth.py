@@ -66,8 +66,8 @@ def generate_verification_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def hash_verification_code(secret: str, email: str, code: str) -> str:
-    message = f"{email}:{code}".encode()
+def hash_verification_code(secret: str, identifier: str, code: str) -> str:
+    message = f"{identifier}:{code}".encode()
     return hmac.new(secret.encode("utf-8"), message, sha256).hexdigest()
 
 

@@ -75,11 +75,14 @@ class Settings(BaseSettings):
     image_max_height: int = 900
     image_webp_quality: int = 82
     image_max_per_classroom: int = 6
+    image_concurrency: int = 2
     image_target_width: int = 1024
     image_target_height: int = 576
     image_pollinations_base_url: str = "https://image.pollinations.ai/prompt"
     image_pollinations_model: str = "flux"
     image_pollinations_token: str = ""
+    # Free tier allows roughly one image every 45 seconds per IP.
+    image_pollinations_min_interval_seconds: float = 45.0
     image_fallback_chain: str = "pollinations"
     image_hf_endpoint: str = "https://api-inference.huggingface.co/models"
     image_hf_model: str = "black-forest-labs/FLUX.1-schnell"
@@ -269,6 +272,12 @@ class Settings(BaseSettings):
                     "IMAGE_FALLBACK_CHAIN must contain qwen, pollinations, "
                     "huggingface or cloudflare entries"
                 )
+        if not 0 <= self.image_pollinations_min_interval_seconds <= 300:
+            raise ValueError(
+                "IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS must be between 0 and 300"
+            )
+        if not 1 <= self.image_concurrency <= 6:
+            raise ValueError("IMAGE_CONCURRENCY must be between 1 and 6")
         if not 0 <= self.image_quality_min_score <= 100:
             raise ValueError("IMAGE_QUALITY_MIN_SCORE must be between 0 and 100")
         if not 0 <= self.image_quality_retry <= 3:

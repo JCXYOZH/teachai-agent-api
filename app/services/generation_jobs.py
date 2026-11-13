@@ -113,6 +113,37 @@ async def create_job(
     return job
 
 
+async def retry_job(db: AsyncSession, owner: User, job_id: UUID) -> GenerationJob:
+    job = await db.scalar(
+        select(GenerationJob).where(
+            GenerationJob.id == job_id,
+            GenerationJob.owner_id == owner.id,
+        )
+    )
+    if job is None:
+        raise AppError(404, "GENERATION_JOB_NOT_FOUND", "Generation job not found")
+    if job.status != "failed":
+        raise AppError(
+            409,
+            "GENERATION_JOB_NOT_RETRYABLE",
+            "Only failed generation jobs can be retried",
+        )
+    payload = dict(job.payload or {})
+    payload.pop("attempts", None)
+    return await create_job(
+        db,
+        owner_id=job.owner_id,
+        course_id=job.course_id,
+        kind=job.kind,
+        outline_id=job.outline_id,
+        stage_id=job.stage_id,
+        provider_id=job.provider_id,
+        model_name=job.model_name,
+        payload=payload,
+        message="Queued retry",
+    )
+
+
 async def mark_running(
     db: AsyncSession, job_id: UUID, *, progress: int, message: str
 ) -> Optional[GenerationJob]:

@@ -138,7 +138,7 @@ async def test_chat_uses_current_scene_and_optional_materials(
     assert body["reply"]["stage_title"] == classroom.json()["name"]
 
     prompt = captured[0]
-    assert "Stage 1:" in prompt
+    assert "第 1 幕：" in prompt
     assert scene["title"] in prompt
     assert "MATERIAL-MARKER-9182" in prompt
 

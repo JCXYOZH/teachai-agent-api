@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -242,30 +243,50 @@ class ClassroomExportService:
             ).all()
             assets = {asset.id: asset for asset in rows}
 
+        async def load_scene_media(
+            scene: CourseScene,
+        ) -> Tuple[Optional[ExportImage], Optional[ExportAudio], List[str]]:
+            scene_warnings: List[str] = []
+            image: Optional[ExportImage] = None
+            if include_images:
+                image = await self._load_image(
+                    owner_id,
+                    assets,
+                    _illustration_media_id(scene),
+                    scene,
+                    scene_warnings,
+                )
+            audio: Optional[ExportAudio] = None
+            if include_audio:
+                audio = await self._load_audio(
+                    owner_id,
+                    assets,
+                    _audio_media_id(scene),
+                    scene,
+                    scene_warnings,
+                )
+            return image, audio, scene_warnings
+
+        loaded = await asyncio.gather(*(load_scene_media(scene) for scene in scenes))
+
         audio_budget = int(self.settings.export_max_bytes * AUDIO_BUDGET_RATIO)
         audio_bytes = 0
         audio_skipped = False
         export_scenes: List[ExportScene] = []
-        for scene in scenes:
-            image: Optional[ExportImage] = None
-            if include_images:
-                image_id = _illustration_media_id(scene)
-                image = await self._load_image(owner_id, assets, image_id, scene, warnings)
-            audio: Optional[ExportAudio] = None
-            if include_audio:
-                audio_id = _audio_media_id(scene)
-                audio = await self._load_audio(owner_id, assets, audio_id, scene, warnings)
-                if audio is not None:
-                    if audio_bytes + len(audio.data) > audio_budget:
-                        audio = None
-                        if not audio_skipped:
-                            audio_skipped = True
-                            warnings.append(
-                                "Narration audio was skipped to keep the export "
-                                "under the size limit"
-                            )
-                    else:
-                        audio_bytes += len(audio.data)
+        for index, scene in enumerate(scenes):
+            image, audio, scene_warnings = loaded[index]
+            warnings.extend(scene_warnings)
+            if audio is not None:
+                if audio_bytes + len(audio.data) > audio_budget:
+                    audio = None
+                    if not audio_skipped:
+                        audio_skipped = True
+                        warnings.append(
+                            "Narration audio was skipped to keep the export "
+                            "under the size limit"
+                        )
+                else:
+                    audio_bytes += len(audio.data)
             export_scenes.append(
                 ExportScene(
                     id=str(scene.id),

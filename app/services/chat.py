@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -399,7 +399,7 @@ class ChatService:
         return items
 
     async def _daily_used(self, owner_id: UUID) -> int:
-        local_now = datetime.now(timezone.utc) + LOCAL_DAY_OFFSET
+        local_now = utcnow() + LOCAL_DAY_OFFSET
         start = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - LOCAL_DAY_OFFSET
         used = await self.db.scalar(
             select(func.count())
@@ -413,7 +413,7 @@ class ChatService:
         return int(used or 0)
 
     def _stage_label(self, stage: CourseStage) -> str:
-        return f"Stage {stage.version}: {stage.name}"
+        return f"第 {stage.version} 幕：{stage.name}"
 
     def _message_view(self, message: CourseChatMessage) -> ChatMessageView:
         return ChatMessageView(
