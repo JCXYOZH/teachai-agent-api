@@ -12,7 +12,7 @@
 - 不勾选时仅保存配置信息，不做多厂商链式兜底；本地模型不可用时对已保存配置单次回退一次。
 - 响应解析失败不换厂商，同厂商重试一次。
 
-回归基线：后端 `pytest` 243 passed、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 102 passed。任何新功能都必须在这条基线上不退化。
+回归基线：后端 `pytest` 243 passed（默认 `-n 4` 并行，约 2 分钟）、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 102 passed。任何新功能都必须在这条基线上不退化。
 
 ## 非目标（明确不做）
 
@@ -84,9 +84,9 @@
 - 细节修正（已完成）：`hash_verification_code` 的参数 `email` 改名为 `identifier`（手机号也走同一路径）；`chat.py` 日配额统计改用 `utcnow()`；教师提示词幕次由 `Stage N: name` 改为「第 N 幕：name」，与前端展示对齐。
 - 配图供应商加固（已完成）：pollinations 下载跟随最多 2 次重定向，瞬时 404/超时按 2s、4s 指数退避重试，免费层按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默认 45）进程内串行；失败信息附带配置 Token 或切换 Qwen 的可操作提示。
 - 教师对话流式输出（已完成）：新增 `POST /api/v1/courses/{course_id}/chat/messages/stream`，SSE 事件为 `delta`/`done`/`error`，等待首 token 时每 15 秒发送心跳；复用现有模型选择、同厂商空响应重试一次与本地不可用单次回退，流结束后仍一次性持久化问答，旧 `/chat/messages` 保留。前端教师面板逐字渲染 Markdown，失败时恢复草稿。
+- 测试套件提速（已完成）：接入 `pytest-xdist` 并在 `pyproject.toml` 默认 `-n 4`，每个 worker 自动创建并复用 `teachai_agent_test_gwN` 测试库；全量回归由 656s 降到 `-n 4` 127–135s、`-n 6` 90s、`-n 8` 72s，243 passed 不变，串行调试用 `-n 0`。原定的事务回滚方案在本环境不可行：该库单条 `TRUNCATE` 就需 ~0.7s（`synchronous_commit=off` 无效），且 pytest-asyncio 受 Python 3.8 限制停在 0.24，无法让多个用例复用同一条连接。
 
 待办：
 
 - 公网接入：`cpolar` 免费额度带宽与稳定性有限，上传大文件等长任务易超时与断流，更换 frp TCP 透传或者内网 443 端口映射。
 - 前端超大组件拆分（待排期）：`classroom-player.tsx`（约 1060 行）、`provider-settings.tsx`（约 740 行）、`knowledge-workspace.tsx`（约 660 行）、`login-form.tsx`（约 615 行），拆为 hook + 子组件。
-- 测试套件提速（待排期）：`tests/conftest.py` 每个用例 `TRUNCATE` + `engine.dispose()`，全量约 12 分钟；改为事务回滚后目标 2–3 分钟。

@@ -127,10 +127,17 @@ Copy-Item .env.example .env
 ## 测试
 
 ```powershell
+# 全量回归：默认 4 个 worker 并行（pyproject 的 addopts），约 2 分钟
 .\.venv\Scripts\python.exe -m pytest -q
+# 想更快：8 个 worker，约 1 分钟
+.\.venv\Scripts\python.exe -m pytest -q -n 8
+# 单文件/单用例调试：串行执行，走 TEST_DATABASE_URL 指向的库
+.\.venv\Scripts\python.exe -m pytest -q -n 0 tests\test_health.py
 .\.venv\Scripts\python.exe scripts\check_migrations.py
 .\.venv\Scripts\python.exe scripts\check_extensions.py
 ```
+
+`-n N` 由 `pytest-xdist` 提供：每个 worker 首次运行时会自动创建并迁移自己的 `teachai_agent_test_gwN` 库，之后复用；`-n 0` 关闭并行并使用 `TEST_DATABASE_URL` 指向的库。因为用例之间共享同一张测试库会互相清表，必须靠“一 worker 一库”才能并行。`--pdb`、`-x` 这类调试参数建议配合 `-n 0` 使用。
 
 `check_migrations.py` 只允许连接名称以 `_test` 结尾的数据库。
 

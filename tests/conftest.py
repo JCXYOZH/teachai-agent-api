@@ -1,14 +1,18 @@
+import asyncio
 import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Optional, Tuple
 
+import asyncpg
 import pytest
 from alembic import command
 from alembic.config import Config
 from dotenv import dotenv_values
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parents[1]
 FILE_ENV = dotenv_values(ROOT / '.env')
@@ -16,6 +20,48 @@ TEST_DATABASE_URL = os.getenv('TEST_DATABASE_URL') or FILE_ENV.get('TEST_DATABAS
 
 if not TEST_DATABASE_URL:
     raise RuntimeError('TEST_DATABASE_URL is required for backend tests')
+
+
+def _worker_database_url(base_url: str) -> Tuple[str, Optional[str]]:
+    """Point every xdist worker at its own database so suites can run in parallel."""
+    worker = os.environ.get('PYTEST_XDIST_WORKER')
+    if not worker:
+        return base_url, None
+    url = make_url(base_url)
+    name = f"{url.database}_{worker}"
+    return url.set(database=name).render_as_string(hide_password=False), name
+
+
+TEST_DATABASE_URL, WORKER_DATABASE = _worker_database_url(TEST_DATABASE_URL)
+
+
+async def _ensure_worker_database() -> None:
+    if not WORKER_DATABASE:
+        return
+    admin = make_url(TEST_DATABASE_URL).set(drivername='postgresql', database='postgres')
+    connection = await asyncpg.connect(admin.render_as_string(hide_password=False))
+    try:
+        exists = await connection.fetchval(
+            'SELECT 1 FROM pg_database WHERE datname = $1', WORKER_DATABASE
+        )
+        if not exists:
+            try:
+                await connection.execute(f'CREATE DATABASE "{WORKER_DATABASE}"')
+            except asyncpg.exceptions.DuplicateDatabaseError:
+                pass
+    finally:
+        await connection.close()
+
+
+def _provision_worker_database() -> None:
+    """Create the per-worker database on a throwaway loop before migrations run."""
+    if not WORKER_DATABASE:
+        return
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_ensure_worker_database())
+    finally:
+        loop.close()
 
 os.environ['DATABASE_URL'] = TEST_DATABASE_URL
 os.environ['APP_ENV'] = 'test'
@@ -43,6 +89,7 @@ from app.services.sms import clear_memory_outbox as clear_sms_outbox  # noqa: E4
 
 @pytest.fixture(scope='session', autouse=True)
 def migrate_database() -> None:
+    _provision_worker_database()
     config = Config(str(ROOT / 'alembic.ini'))
     config.set_main_option('script_location', str(ROOT / 'alembic'))
     command.upgrade(config, 'head')

@@ -7,6 +7,8 @@ requires-python = ">=3.8,<3.9"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# Parallel by default (one test database per worker); use -n 0 for a serial run.
+addopts = "-n 4"
 testpaths = ["tests"]
 filterwarnings = [
   "ignore:passlib.*:DeprecationWarning",
