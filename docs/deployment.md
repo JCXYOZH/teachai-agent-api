@@ -1,25 +1,28 @@
 # 生产部署
 
-单机部署：一台 CentOS 7.9 服务器同时运行 Nginx、PostgreSQL 16 和两个 Docker 容器。公网入口只有 Nginx 的 80/443；容器端口 49153（前端）与 65534（后端）监听 `0.0.0.0`，便于内部调用与排障。
+单机部署：一台 CentOS 7.9 服务器（以 `node2` 示例）同时运行 Nginx、PostgreSQL 16 和两个 Docker 容器。公网入口只有海外中转机上 `frps` 的 80/443，经 frp 隧道透传到本机 Nginx；容器端口 49153（前端）与 65534（后端）只听内网，便于内部调用与排障。
 
-## 已确认的环境
+## 环境准备
 
-| 项目 | 值                                                                            |
-| --- |------------------------------------------------------------------------------|
-| 域名 | `ai.offer.us.ci`（DNS 已就绪）                                                    |
-| 证书 | Let's Encrypt，已复制到 `/etc/nginx/certs/teachai`（`fullchain.pem`、`privkey.pem`） |
-| 生产数据库 | `teachai_agent`（PostgreSQL 16，宿主机）                                           |
-| 资产目录 | `/data/TeachAIAgent`，已执行 `chown -R 10001:10001`                              |
-| 后端端口 | 容器内 `0.0.0.0:65534`                                                          |
-| 前端端口 | `0.0.0.0:49153`（host 网络，不做端口映射）                                              |
-| 迁移 | 容器启动时自动执行 `alembic upgrade head`                                             |
-| llama.cpp | `http://47.120.68.25:65535/v1` ，模型 `Qwen3.6-35B-A3B`                         |
-| 公网接入 | 海外中转机（宝塔 Nginx）→ `cpolar` 隧道 → 内网 `node2`，见「公网接入链路」                      |
+| 项目 | 值                                                                           |
+| --- |-----------------------------------------------------------------------------|
+| 域名 | `ai.offer.us.ci`（DNS 就绪）                                                    |
+| 证书 | Let's Encrypt，certbot 在 `node2` 签发，同步到 `/etc/nginx/certs/teachai`（`fullchain.pem`、`privkey.pem`） |
+| 生产数据库 | `teachai_agent`（PostgreSQL 16，宿主机）                                          |
+| 资产目录 | `/data/TeachAIAgent`，已执行 `chown -R 10001:10001`                             |
+| 后端端口 | 容器内 `0.0.0.0:65534`                                                         |
+| 前端端口 | `0.0.0.0:49153`（host 网络，不做端口映射）                                             |
+| 迁移 | 容器启动时自动执行 `alembic upgrade head`                                            |
+| llama.cpp | `http://47.120.68.25:65535/v1` ，模型 `Qwen3.6-35B-A3B`                        |
+| 公网接入 | 海外中转机 `47.243.194.102`（`frps`）→ `frp` 隧道 → `node2`（`frpc` + Nginx），见「公网接入链路」 |
 
 ## 架构
 
 ```text
-浏览器 ──HTTPS──▶ Nginx (443, ai.offer.us.ci)
+浏览器 ──HTTPS──▶ frps 47.243.194.102:443      （海外中转机，只做 TCP 转发）
+                    │ frp 隧道（7000）
+                    ▼
+              Nginx (443, ai.offer.us.ci)       （node2，TLS 终结）
                     ├── /             → 127.0.0.1:49153  teachai-agent-web (Next.js standalone)
                     └── /api/ /docs/ /static/ → 127.0.0.1:65534  teachai-agent-api (FastAPI)
                                              │
@@ -30,34 +33,102 @@
 
 同源部署是刻意选择：refresh cookie 为 `Path=/api/v1/auth`、CSRF cookie 为 `Path=/`，同源时不需要跨域放行，也不会被 SameSite 拦截。前端 `NEXT_PUBLIC_API_BASE_URL` 生产值为相对路径 `/api/v1`。
 
-## 公网接入链路（海外中转 + cpolar）
+## 公网接入链路（frp 隧道）
 
-实际链路不是单机直连：域名解析到海外中转机，再由 `cpolar` 隧道把请求送回内网 `node2`，因此是三跳。
+域名 `ai.offer.us.ci` 解析到海外中转机 `47.243.194.102`（阿里云，只跑 `frps`，不装 Nginx），`frp` 把 80/443 原样 TCP 透传到 `node2`，TLS、HSTS、Cookie 与全部 HTTP 转发逻辑都在 `node2` 的 Nginx 上，整条链路只进行两跳。
 
 ```text
-浏览器 ──HTTPS──▶ 海外中转 Nginx（ai.offer.us.ci:443，宝塔 /www/server/nginx）
-                    └── 全量代理，Host/SNI 改写为 cpolar 子域名 ──▶ https://<cpolar 子域名>
-                                                                    │ 隧道
-                                                                    ▼
-              node2 Nginx（80，/usr/local/nginx）── cpolar-ingress.conf ──▶ 127.0.0.1:49153 / :65534
+浏览器 ──HTTPS──▶ 47.243.194.102  frps（80 / 443 按 remote_port 转发，控制端口 7000）
+                    │ frp 隧道（token 认证）
+                    ▼
+               node2  frpc ──▶ 127.0.0.1:443  Nginx（TLS 终结，证书 /etc/nginx/certs/teachai）
+                          └─▶ 127.0.0.1:80   Nginx（ACME 校验 + 301 跳 https）
 ```
 
-三个模板都在 `deploy/nginx/`：
+### frps（`/usr/local/frp/frps.toml`，v0.67.0）
 
-| 文件 | 部署位置 | 作用 |
-| --- | --- | --- |
-| `relay-cpolar-all.conf` | 海外机站点配置 | 全量代理到 cpolar，替换 `__CPOLAR_HOST__`；`/` 与 `/api/` 走同一上游 |
-| `relay-ai-offer-us-ci.conf` | 海外机备用站点配置 | 按路径拆分代理；`/api/` 必须改写 `Host`，否则 cpolar 按 Host 返回它自己的 404 页面 |
-| `cpolar-ingress.conf` | `node2` 的 `conf.d/` | 承接隧道并分流到前端/后端容器 |
+```toml
+bindPort = 7000
 
-踩坑要点：
+auth.method = "token"
+auth.token = "<FRP_TOKEN>"
 
-- 不要用 `return 301` 跳到 cpolar 子域名：浏览器会变成跨域请求，refresh/CSRF cookie 失效。必须保持同源代理。
-- 上游 `Host` 与 TLS SNI 都必须是当前 cpolar 子域名；传 `ai.offer.us.ci` 会命中 cpolar 的 404 页面。
-- cpolar 客户端从 IPv6 `::1` 连入，`cpolar-ingress.conf` 必须同时监听 IPv4/IPv6 并声明 `default_server`，否则隧道请求会落到 `teachai-agent.conf` 的 `:80 return 301`，表现为无限 301。
-- 隧道终点是明文 HTTP，请固定 `X-Forwarded-Proto https` 与 `X-Forwarded-Host ai.offer.us.ci`，否则后端拼出的绝对地址会变成 http。
-- cpolar 子域名每次重建会变化，改完 `__CPOLAR_HOST__` 后需 `nginx -t && nginx -s reload`（两块机器都要）。
-- cpolar 免费额度带宽有限，首屏额外约 2 秒，长任务（课堂生成、导出下载）易断流；长期方案是 frp TCP 透传或直接给内网 443 做端口映射。
+# 80/443 由具体 TCP 代理按 remote_port 申请，不使用 vhost 模式。
+allowPorts = [{ start = 80, end = 80 }, { start = 443, end = 443 }]
+```
+
+- v0.52 起只认 TOML：`[common]` + `bind_port` 这类 ini 语法会被直接拒绝，文件后缀改成 `.toml` 也不改变解析器。
+- 不要保留 `vhostHTTPPort` / `vhostHTTPSPort`：它们会先占住 80/443，TCP 代理申请 `remote_port` 时报 `port already used`。
+- 不启用 dashboard。临时需要时设 `webServer.addr = "127.0.0.1"` 并配账号密码，不要把 7500 放进安全组。
+- 安全组只放行 22、80、443、7000，7000 的源地址限制到 `node2` 出口 IP。
+
+### frpc（`node2`，`/usr/local/frp/frpc.toml`，v0.67.0）
+
+```toml
+serverAddr = "47.243.194.102"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "<FRP_TOKEN>"
+
+[[proxies]]
+name = "teachai-edge-http"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 80
+remotePort = 80
+
+[[proxies]]
+name = "teachai-edge-https"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 443
+remotePort = 443
+transport.proxyProtocolVersion = "v2"
+```
+
+- `transport.proxyProtocolVersion` 是代理级字段，写在 `[[proxies]]` 内，不是客户端级；位置写错不会报错，但也不生效。
+- 只有 443 开 PROXY protocol：80 只承载 ACME 校验与 301，用不到真实 IP；两端都开也可以，但 Nginx 两个 `listen` 必须同步加 `proxy_protocol`，多一个失配点。
+- 同机已有的其他项目代理不要改动，代理名不能重复。
+
+### 为何必须开 PROXY protocol
+
+TCP 透传后 Nginx 看到的 `$remote_addr` 恒为 `127.0.0.1`。这不只是日志问题：短信验证码按 IP 限流（`SMS_IP_LIMIT_PER_MINUTE` / `SMS_IP_LIMIT_PER_HOUR`）与聊天日配额都按 IP 计数，关掉等于全站共享一份额度。Nginx 侧对应：
+
+```nginx
+    listen 443 ssl http2 proxy_protocol;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+```
+
+两端必须同时生效：frpc 不发协议头而 Nginx 要求，会直接返回 400；反之取不到真实 IP。
+
+### 上线顺序
+
+1. `node2` 先只启动 80 代理，`curl -I http://ai.offer.us.ci` 应返回 `301` 到 https。
+2. 确认证书仍在有效期（当前网站 `Feb  1 05:58:30 2027 GMT`）；临近到期先续期，见下节。
+3. 再加 443 代理并给 Nginx 加 `proxy_protocol`，`nginx -t && nginx -s reload` 后 `curl -fsS https://ai.offer.us.ci/api/v1/health` 。
+4. 清理历史：删除 `node2` 上残留的旧配置文件，确保 80 端口只有一份 `default_server` 声明。
+5. 看 `access.log`：`$remote_addr` 已是真实公网 IP，而不是 `127.0.0.1`。
+
+### 证书续期
+
+证书在 `node2`，续期也由 `node2` 发起，走 80 端口的 HTTP-01：
+
+```bash
+certbot certonly --webroot -w /usr/local/nginx/html/certbot \
+  --cert-name ai.offer.us.ci -d ai.offer.us.ci \
+  --deploy-hook 'cp /etc/letsencrypt/live/ai.offer.us.ci/fullchain.pem /etc/nginx/certs/teachai/fullchain.pem && cp /etc/letsencrypt/live/ai.offer.us.ci/privkey.pem /etc/nginx/certs/teachai/privkey.pem && /usr/local/nginx/sbin/nginx -s reload'
+```
+
+`--deploy-hook` 负责把新证书同步到 `/etc/nginx/certs/teachai` 并 reload；漏掉这步会出现「续期成功但站点仍在用旧证书」。`certbot-renew.timer` 默认每天运行两次，确认已 `systemctl enable --now certbot-renew.timer`。
+
+### 踩坑记录
+
+- vhost 模式与 `remote_port` 模式互斥，换模式必须先删 vhost 配置再重启 `frps`。
+- 公网入口必须保持同源：任何 `return 301` 跳到别的域名都会让 refresh/CSRF cookie 跨域失效。
+- Nginx 的 80 与 443 server 块 `server_name` 都必须是 `ai.offer.us.ci`，否则请求落到 default server。
+- `frp` 是纯 TCP 转发，不做任何缓冲；SSE 的缓冲控制由 Nginx 站点配置里的专用 `location` 负责。
 
 ## 服务器准备
 
@@ -68,10 +139,12 @@ sudo install -d -o 10001 -g 10001 -m 750 /data/TeachAIAgent
 sudo chown -R 10001:10001 /data/TeachAIAgent      # 每当迁移开发测试数据后需再执行
 ```
 
-证书文件复制到 `/etc/nginx/certs/teachai`：
+证书由 `node2` 上的 certbot 签发并续期，Nginx 读取的是同步副本：
 
-- `/etc/nginx/certs/teachai/fullchain.pem` ← `ai_offer_us_ci_fullchain.pem`
-- `/etc/nginx/certs/teachai/privkey.pem` ← `ai_offer_us_ci_private.key`
+- `/etc/nginx/certs/teachai/fullchain.pem`
+- `/etc/nginx/certs/teachai/privkey.pem`
+
+签发与自动同步见「公网接入链路」的「证书续期」。
 
 ## 后端
 
@@ -97,15 +170,15 @@ docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 - 镜像内含 `HEALTHCHECK`，探测 http://127.0.0.1:65534/api/v1/health
 - `APP_ENV=production` 时启动会强制校验：`JWT_SECRET` 非默认且至少 32 字符、`EMAIL_DELIVERY=agentsend`、`AGENTSEND_BASE_URL` 为 HTTPS、`SMS_DELIVERY=spug`、`SPUG_URL` 为 HTTPS、`ASSET_STORAGE_ROOT` 为绝对路径。任一不满足即启动失败，属预期行为。
 
-- 短信注册验证码走 push.spug.cc 模板推送：`SPUG_URL` 形如 `https://push.spug.cc/send/<模板ID>`，模板 ID 属于凭证，只放 `.env.production`（`chmod 600`），不要提交到 Git。修改模板或更换号码后先手工 `curl` 一次确认返回 200。
+- 短信注册验证码走 push.spug.cc 模板推送：`SPUG_URL` 形如 `https://push.spug.cc/send/<模板ID>`，模板 ID 属于凭证，只放 `.env.production`（`chmod 600`），不提交到 Git。修改模板或更换号码后可以先手工 `curl` 一次确认返回 200。
 - 短信发送阈值可在 `.env.production` 调整：`SMS_IP_LIMIT_PER_MINUTE`（默认 3）、`SMS_IP_LIMIT_PER_HOUR`（默认 10）、`SMS_TARGET_LIMIT_PER_HOUR`（默认 5）；超限返回 `429 SMS_SEND_RATE_LIMITED`，前端会自动进入重发倒计时。
-- 生产环境的 Provider Base URL 必须是 HTTPS；本地 llama.cpp 走明文时，需要在 `.env.production` 里显式放行，否则大纲/课堂生成返回 `422 INSECURE_PROVIDER_URL`：
+- 生产环境的 Provider Base URL 必须是 HTTPS；本地 llama.cpp 走明文时，需要在 `.env.production` 里显式放行，否则大纲/课堂生成会返回 `422 INSECURE_PROVIDER_URL`：
 
 ```text
 PROVIDER_ALLOW_INSECURE_HTTP=47.120.68.25:65535
 ```
 
-  该项默认值为空，只放行 `host:port` 精确匹配的地址，不要填写网段或通配域名。
+该项默认值为空，只放行 `host:port` 精确匹配的地址，不要填写网段或通配域名。
 
 ## 前端
 
@@ -134,7 +207,7 @@ docker compose -f docker-compose.prod.yml logs -f web
 # 0. 确认二进制带 SSL 模块
 /usr/local/nginx/sbin/nginx -V 2>&1 | tr ' ' '\n' | grep -E 'http_ssl_module|http_v2_module'
 
-# 1. 确认 worker 账号存在（主配置里写的 user nginx）
+# 1. 确认 worker 账号存在（主配置里用的 user nginx）
 id nginx || sudo useradd -r -s /sbin/nologin nginx
 
 # 2. 安装配置
@@ -157,6 +230,8 @@ sudo /usr/local/nginx/sbin/nginx -s reload     # 首次启动用：sudo /usr/loc
 - 日志在 `/usr/local/nginx/logs/access.log`、`error.log`，不是 `/var/log/nginx`。
 - 证书续期后执行 `sudo /usr/local/nginx/sbin/nginx -s reload`。
 - 若 80 端口要留给 ACME 校验，`/.well-known/acme-challenge/` 走 `/usr/local/nginx/html/certbot`，用 Certbot `--webroot -w /usr/local/nginx/html/certbot` 签发。
+- 443 server 块带 `proxy_protocol`（对应 frp 的 PROXY protocol v2）；换成直连或其他入口时必须同步去掉，否则 TLS 握手失败返回 400。
+- 教师对话 SSE 走专用 `location`：`proxy_buffering off`、`proxy_cache off`、`gzip off`，其余 `/api/` 保持默认缓冲。
 ## 环境避坑：容器网络 DNS
 
 服务器 Docker 默认 bridge 网络无法解析外部域名（`Temporary failure in name resolution`），但宿主网络正常。表现是镜像构建在 `pip install` / `npm ci` 阶段失败。
@@ -188,7 +263,7 @@ sudo iptables -t nat -L DOCKER -n | head
 重启 docker 会让运行中的容器按 `restart: unless-stopped` 重新拉起。
 ## 用已构建镜像启动
 
-镜像可以在开发机上通过远程 Docker（`DOCKER_HOST=tcp://10.250.91.121:2375`）构建，服务器只保留 compose 文件与 `.env.production`：
+镜像可以在开发机上通过远程 Docker（`DOCKER_HOST=tcp://10.121.124.121:2375`）构建，服务器只保留 compose 文件与 `.env.production`：
 
 ```bash
 cd /opt/teachai/teachai-agent-api
@@ -210,7 +285,7 @@ docker build --network host -t teachai-agent-web:latest \
 
 ## 端口暴露
 
-两个容器端口都可从外部直连，用于排障与内部调用。若不允许从外部访问，请在防火墙上限制来源：
+容器端口监听在宿主机 `0.0.0.0`，仅用于排障与内网调用；公网入口只有 `frps` 的 80/443。若不允许内网之外的机器直连，请在防火墙上限制来源：
 
 ```bash
 sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="49153" protocol="tcp" accept'
@@ -234,7 +309,7 @@ sudo firewall-cmd --reload
 - 单副本（当前部署）：`GENERATION_JOB_STARTUP_GRACE_SECONDS=0`，重启后立即回收；多副本滚动重启时
   把它设成大于最长任务时长（例如 1800），避免抢走其他副本仍在执行的任务。
 - 回退：`GENERATION_QUEUE_ENABLED=false` 退回 `BackgroundTasks`，仅用于单进程调试。
-- 队列复用现有 `generation_jobs` 表，不新增迁移；升级时仍需先 `alembic upgrade head`。
+- 队列复用现 `generation_jobs` 表，不新增迁移；升级时仍需先 `alembic upgrade head`。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
@@ -249,7 +324,7 @@ sudo firewall-cmd --reload
 
 Pollinations 免费层默认按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默认 45 秒，范围 0–300）在进程内串行；配置 `IMAGE_POLLINATIONS_TOKEN` 后可设为 0。多副本部署时各进程独立计数，生产建议配置 Token 或改用 Qwen。
 
-教师对话使用 SSE 流式返回；Nginx 需关闭响应缓冲（`proxy_buffering off;` 与 `proxy_cache off;`）并为该路由放宽 `proxy_read_timeout`。后端已返回 `X-Accel-Buffering: no`，cpolar/frp 需确认链路不做缓冲。
+教师对话使用 SSE 流式返回；`frp` 是 TCP 透传不做缓冲，Nginx 侧由站点配置的专用 `location` 关闭 `proxy_buffering` / `proxy_cache` 与 `gzip`。后端同时返回 `X-Accel-Buffering: no` 作为兜底。
 
 ## 验收清单
 
@@ -260,6 +335,10 @@ Pollinations 免费层默认按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默�
 5. 打开 `https://ai.offer.us.ci/docs` 能加载本地 Swagger UI，控制台无资源加载失败。
 6. 触发一次大纲生成与课堂生成，确认轮询进度正常、无 401/500。
 7. 生成一张配图并导出 PPTX，确认文件落在 `/data/TeachAIAgent` 且属主为 10001。
+8. `curl -I http://ai.offer.us.ci/api/v1/health` 返回 301 到 https，说明 80 透传与站点跳转都生效。
+9. `access.log` 中 `$remote_addr` 是真实公网 IP（证明 PROXY protocol 生效），此时短信按 IP 限流才会按真实来源计数。
+10. 教师对话逐字输出、不在中途整段出现，说明 SSE 未被缓冲。
+11. 隧道空闲 30 分钟后仍能打开首页与 `/api/v1/health`。
 
 ## 升级与回滚
 

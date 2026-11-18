@@ -3,7 +3,7 @@
 ## 账号标识
 
 - 默认注册方式改为手机号（中国大陆 11 位手机号）；邮箱注册通过注册页底部的「使用邮箱注册」切换。
-- 两种账号都能用「手机号或邮箱 + 密码」登录：`POST /api/v1/auth/login` 传 `identifier`，旧的 `email` 字段仍兼容。
+- 两种账号都能用「手机号或邮箱 + 密码」登录：`POST /api/v1/auth/login` 传 `identifier`。
 - `users.email` 与 `users.phone` 都可为空，但必须二选一；数据库用 `CHECK` 约束 `ck_users_contact_present` 兜底。
 
 ## 手机号注册（默认）
@@ -133,7 +133,7 @@ POST <SPUG_URL>
 {"name": "尊敬的用户", "code": "123456", "targets": "13800138000"}
 ```
 
-返回 200 视为成功，其余状态码与网络异常都抛 `SmsDeliveryError`，接口返回 `503 SMS_DELIVERY_UNAVAILABLE` 并立即释放冷却。`SPUG_URL` 含模板 ID，属凭证，只放 `.env.production`，不要提交到 Git。
+返回 200 视为成功，其余状态码与网络异常都抛 `SmsDeliveryError`，接口返回 `503 SMS_DELIVERY_UNAVAILABLE` 并立即释放冷却。`SPUG_URL` 含模板 ID，属凭证，只放 `.env.production`，注意不要提交到 Git。
 
 ### 发送限流（防刷）
 

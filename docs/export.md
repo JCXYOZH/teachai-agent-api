@@ -18,7 +18,7 @@
 
 `format` 只接受 `pptx` 与 `html`，其它取值返回 `422`。
 
-`include_audio=false` 时 PPTX 不写旁白备注，HTML 保留旁白文字但不内联音轨；quiz 参考答案仍会导出。
+`include_audio=false` 时 PPTX 不写旁白备注，HTML 保留旁白文字但不内联音轨；quiz 参考答案仍导出。
 
 列表响应：
 

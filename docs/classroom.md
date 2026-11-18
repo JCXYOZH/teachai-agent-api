@@ -1,6 +1,6 @@
 # 课堂生成
 
-阶段 4A 把已确认的课程大纲编译成可播放的课堂数据。生成结果按版本保存，每个版本包含有序场景；`GET` 返回最新版本。
+已确认的课程大纲编译成可播放的课堂数据。生成结果按版本保存，每个版本包含有序场景；`GET` 返回最新版本。
 
 ## API
 
@@ -37,12 +37,12 @@
 1. 请求阶段校验课程、最新大纲与 Provider，写入 `kind=classroom` 的 `queued` 任务后立即返回。
 2. 后台任务把状态置为 `running`（10%），读取素材解析文本（默认最多 12,000 字符）。
 3. 调用 Provider 生成课堂 JSON（40%），宽容接受代码围栏、前后解释和缺失字段。
-4. 编译为 DSL `0.12.0` 场景，写入 `course_stages` 与 `course_scenes`。
+4. 编译为 DSL `0.13.0` 场景，写入 `course_stages` 与 `course_scenes`。
 5. 任务更新为 `completed`、进度 100，并关联 `stage_id` 与新版本。
 
 解析失败会自动重试一次；仍失败时返回 `CLASSROOM_INVALID_RESPONSE`，同时把任务标记为 `failed` 并记录 `error_code`。Provider 超时返回 `CLASSROOM_GENERATION_TIMEOUT`，其他 Provider 故障返回 `CLASSROOM_PROVIDER_ERROR`。
 
-同一课程同类型的生成任务只允许一个。已有任务在排队或运行时，新的 POST 返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 指向进行中的任务，客户端应改为继续轮询。服务重启时遗留的 `queued`/`running` 任务会在启动阶段标记为 `failed`，错误码为 `GENERATION_INTERRUPTED`。
+同一课程同类型的生成任务只允许一个。已有任务在排队或运行时，新的 POST 返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 指向进行中的任务，客户端应为继续轮询。服务重启时遗留的 `queued`/`running` 任务会在启动阶段标记为 `failed`，错误码为 `GENERATION_INTERRUPTED`。
 
 后台执行使用进程内任务，启动恢复也按单进程假设设计。若改为 `uvicorn --workers N`，需要换成共享队列（如 ARQ/Celery）并去掉启动时的全局恢复，否则其他 worker 正在执行的任务会被误判为中断。
 
@@ -255,5 +255,3 @@ Qwen Omni 只支持文本输出，课堂调用会自动附加 `modalities: ["tex
 ```
 
 脚本读取 `DASHSCOPE_API_KEY`，只输出场景统计，不打印密钥或完整模型响应。
-
-阶段 4B 负责前端课堂渲染器，4C 补齐互动、项目式、作答提交与事件流播放；阶段 6A 增加旁白合成、音频资产与播放器音频优先播放；阶段 6B 增加课堂配图、Qwen Image 主通道与 Pollinations 兜底。

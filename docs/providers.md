@@ -1,6 +1,6 @@
 # Provider 配置
 
-阶段 3A 提供用户级模型 Provider 配置。支持内置 Provider：OpenAI、Anthropic、DeepSeek、Qwen/DashScope、Kimi/Moonshot、GLM/Zhipu 和本地 llama.cpp。
+提供用户级模型 Provider 配置。支持内置 Provider：OpenAI、Anthropic、DeepSeek、Qwen/DashScope、Kimi/Moonshot、GLM/Zhipu 和本地 llama.cpp。
 
 ## API
 
@@ -26,11 +26,11 @@
 }
 ```
 
-## 生成时使用哪个 Provider
+## 生成使用 Provider
 
 - 大纲与课堂生成默认固定使用本地 `llama-local`（`Qwen3.6-35B-A3B`，读取 `LLAMA_BASE_URL` / `LLAMA_MODEL`）。
 - 只有在设置页勾选「使用当前模型」（即 `is_default: true`）并保存后，生成才会改用该 Provider；同一时间只有一家生效。
-- 只保存配置信息（不勾选）不影响生成，也不存在按配置顺序依次尝试其他厂商的兜底链。
+- 只保存配置信息（不勾选）不影响生成，也不会按配置顺序依次尝试其他厂商的兜底链。
 - 课堂「问老师」对话使用同一套解析（`resolve_generation_candidates`）：空回答只重试同一厂商一次；只有主通道为 `llama-local` 且连接失败或返回非 2xx 时，才对已保存配置单次回退。
 - 本地模型不可用（连接失败或非 2xx）时，会回退到用户最近保存且凭据完整的配置，仅尝试一次；仍失败则任务失败并提示。
 - 响应解析失败时不切换 Provider，同一 Provider 重试一次；请求里的 `model` 只临时覆盖模型名，不会自动挑选同一厂商的其他模型。
@@ -59,7 +59,7 @@ Qwen 的 TTS Base URL 留空时：Provider Base URL 仍是官方默认地址则�
 }
 ```
 
-可用中文音色包括 `zh-CN-XiaoxiaoNeural`、`zh-CN-XiaoyiNeural`、`zh-CN-YunjianNeural`、`zh-CN-YunxiNeural`、`zh-CN-YunxiaNeural`、`zh-CN-YunyangNeural` 及两个方言音色。该客户端依赖微软在线服务，服务器必须能访问 `speech.platform.bing.com`；它没有官方 SLA，关键业务建议保留 Qwen 或其他正式 TTS 作为主通道。
+可用中文音色包括 `zh-CN-XiaoxiaoNeural`、`zh-CN-XiaoyiNeural`、`zh-CN-YunjianNeural`、`zh-CN-YunxiNeural`、`zh-CN-YunxiaNeural`、`zh-CN-YunyangNeural` 及两个方言音色。该客户端依赖微软在线服务，服务器必须能访问 `speech.platform.bing.com`；无官方 SLA，关键业务建议保留 Qwen 或其他正式 TTS 作为主通道。
 
 自定义 Qwen 兼容网关只需替换 `base_url` 和 `default_model`。例如阿里云 MaaS 地址
 `https://<workspace-host>/compatible-mode/v1` 可直接保存，前提是域名解析到公网地址。

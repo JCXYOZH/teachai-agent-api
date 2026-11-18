@@ -1,10 +1,10 @@
 # 待开发路线（Roadmap）
 
-本文件是 TeachAIAgent（后端 `teachai-agent-api` + 前端 `teachai-agent-web`）唯一的待办清单来源，完成一项就同时在这更新状态。
+本文件是 TeachAIAgent（后端 `teachai-agent-api` + 前端 `teachai-agent-web`）唯一的待办清单来源，每完成一项就同时在这更新状态。
 
 ## 当前状态
 
-阶段 1–6D 全部完成并已生产联调：认证与邮箱验证码注册、课程/文件夹与本地素材（上传、解析、检索、鉴权下载）、用户级 Provider 配置与真实连接测试、版本化课程大纲、课堂 DSL 与沉浸式播放器、旁白合成、课堂配图（Qwen Image + 免费兜底）、课堂导出（PPTX 保真版 + 单文件 HTML）、Docker + 宿主 Nginx + TLS 生产部署。
+阶段 1–6D 与 P0/P1/P2 全部完成并已生产联调：认证（邮箱 / 手机号验证码注册）、课程与文件夹、本地素材（上传、解析、检索、鉴权下载）、用户级 Provider 配置与真实连接测试、版本化课程大纲、课堂 DSL 与沉浸式播放器、旁白合成、课堂配图（Qwen Image + 免费兜底）、课堂导出（PPTX 保真版 + 单文件 HTML）、教师对话（SSE 流式）、生成任务队列与可观性，以及 Docker + 宿主 Nginx + TLS 生产部署与 frp 公网接入。
 
 最近一次语义调整（已实现并测试）：
 
@@ -12,81 +12,8 @@
 - 不勾选时仅保存配置信息，不做多厂商链式兜底；本地模型不可用时对已保存配置单次回退一次。
 - 响应解析失败不换厂商，同厂商重试一次。
 
-回归基线：后端 `pytest` 243 passed（默认 `-n 4` 并行，约 2 分钟）、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 102 passed。任何新功能都必须在这条基线上不退化。
+回归基线：后端 `pytest` 243 passed（默认 `-n 4` 并行，约 2 分钟）、`ruff`/`mypy` 干净；前端 `typecheck`/`lint` 通过、`vitest` 112 passed。任何新功能都必须在这条基线上不退化。
 
-## 非目标（明确不做）
+## 待办
 
-- 不保留教师 / 助教 / 学生多 Agent 体系：`teachai` 只需单 Agent 的「教师」角色，供用户对话、互动提问与解答。
-- 不做学生端独立身份与班级/作业流转（当前所有资源都按 owner 隔离）。
-- 不做自动挑选具体模型替用户决策：换模型只能由用户改对应厂商的配置并显式勾选。
-- 不引入多租户组织/团队协作模型，除非另行拍板。
-
-## P0：用户输入文本清洗补全（已完成）
-
-现状：模型输出侧已经在落库前统一走 `app/core/text.py` 的 `sanitize_text` / `sanitize_json`，但用户输入的文本没有。用户提交含 `0x00` 的字符串时，`asyncpg` 抛 `CharacterNotInRepertoireError`，接口 500。
-
-待覆盖入口：
-
-- 建课 / 改课：`title`、`description`。
-- 文件夹名称。
-- 手工保存大纲（`PUT` 大纲）里的标题与场景文本。
-- 对话功能新增的消息内容（实现时同步接入）。
-
-验收：向上述每个入口提交含 `\x00`、未配对代理项、超长空白的文本，均返回 200/201 且落库内容已被清洗；现有 140 + 66 条测试不退化。
-
-状态：已完成。清洗实现在 `app/core/text.py` 的 `normalize_user_text` / `normalize_user_text_input`，入口覆盖建课改课标题与简介、文件夹名、手工保存大纲、对话消息（`CHAT_MAX_MESSAGE_CHARS=2000`，前端按 code point 计数并禁用超限发送）。
-
-## P1：课堂内「用户 ↔ 教师」对话问答（已完成）
-
-状态：阶段 5 已完成并通过回归。实现见 `docs/chat.md`、`app/services/chat.py`、`app/services/chat_prompt.py`、`app/api/routes/chat.py`、`components/classroom/teacher-chat.tsx`。
-
-已拍板并落地的决策：
-
-1. 入口：课堂播放器场景头部「问老师」按钮；桌面右侧抽屉、移动端底部弹层。
-2. 上下文：最新大纲 + 当前场景正文 + 最近 12 条对话；课程素材摘录默认关闭，开启后上限 6,000 字符。
-3. 返回：普通 JSON 同步返回，P1 不做 SSE。
-4. 会话：每课程一条长会话；只支持「清空对话」，不做历史会话列表。
-5. 持久化：消息入库并长期保留；课程软删除后不可访问；清空为软清空（`cleared_at`），保留限额统计。
-6. 教师行为：只答不追问，不做模型生成引用；界面显示服务端确定的「第 N 幕 · 标题」。
-7. 模型与限额：沿用「默认本地模型 + 勾选才切换」；单条消息 ≤ 2,000 字；每用户每天 200 条；回答 ≤ 1,500 tokens。
-8. 移动端：与桌面同一组件的底部弹层形态。
-9. 与生成任务：独立同步接口，不复用 `generation_jobs`，避免与课堂/旁白/配图互斥。
-
-验收结果：围绕当前课堂连续问答可用；回答与大纲/场景一致；默认走本地模型且切换逻辑与设置页一致；刷新后历史恢复；移动端可用；P0 与既有测试保持通过。
-
-## P1.5：手机号注册（默认注册方式，已完成）
-
-需求：账号默认使用手机号注册，邮箱注册通过注册页下方小字切换；邮箱注册的账号依旧可以登录。
-
-已拍板并落地的后端决策（阶段 2 完成）：
-
-1. 数据模型：`users.email` 改为可空，新增 `users.phone`（唯一、可空），`CHECK (email IS NOT NULL OR phone IS NOT NULL)` 兜底；迁移 `0015_phone_auth`。
-2. 验证码：新建 `phone_verifications`，结构与 `email_verifications` 一致，共用 TTL、重发冷却与尝试次数。
-3. 发送通道：`SMS_DELIVERY=memory|log|spug`；`spug` 走 push.spug.cc 模板推送，`SPUG_URL` 属凭证只放 `.env.production`；生产强制 `spug` 且必须 HTTPS。
-4. 接口：`register/send-code` 与 `register` 接受 `email` 或 `phone`（互斥，违反返回 `422`）；发码响应新增 `channel` / `target`；登录统一用 `identifier`，旧的 `email` 字段仍兼容。
-5. 展示：所有响应里的手机号脱敏为 `138****8000`；手机号注册默认昵称 `用户` 加手机号后四位。
-6. 错误码新增 `PHONE_ALREADY_REGISTERED`、`PHONE_VERIFICATION_NOT_FOUND`、`SMS_DELIVERY_UNAVAILABLE`。
-
-前端也已落地：注册页默认手机号、输入框下方小字「使用邮箱注册 / 使用手机号注册」切换（切换时清空格式不匹配的联系人）、验证码区标题随渠道变化；登录页单输入框「手机号或邮箱」；设置页与侧边栏改为 `email ?? phone` 展示。
-
-验收结果（阶段 4 联调，用 153****7367 走真实链路，`SMS_DELIVERY=log` 从日志取码）：发码 `202` 且返回 `153****7367`、注册 `201`、`identifier` 登录与 `/auth/me` 均返回脱敏手机号、重复号码 `409`、双字段 `422`、错误密码 `401`；浏览器端登录注册切换、字段校验、登录回跳 `/library`、设置页与侧边栏展示脱敏号码均正常，无控制台错误。后端 185 passed、前端 86 passed。
-
-## P2：体验与稳定性
-
-已完成：
-
-- 短信防刷（已完成）：手机号渠道在 60 秒冷却之外叠加 IP 与号码双维度滑动窗口限流——同一 IP 每分钟 3 次、每小时 10 次，同一号码每小时 5 次（`SMS_IP_LIMIT_PER_MINUTE` / `SMS_IP_LIMIT_PER_HOUR` / `SMS_TARGET_LIMIT_PER_HOUR`），超限返回 `429 SMS_SEND_RATE_LIMITED` 并带 `details.retry_after`。计数表 `verification_send_logs`，迁移 `0016_sms_send_logs`；邮箱渠道不受影响。
-- 合理措辞（已完成）：回答上方的幕次标题按幕次分组，同一幕内连续问答只在幕切换时显示一次「第 N 幕 · 标题」，切换后显示新幕标题；不再每次回答重复同一标题。
-- 配图质量（已完成）：新增 `app/services/image_quality.py` 本地启发式评分（分辨率、模糊、曝光、截断、纯色、色数），低分时同 Provider 用变体提示词重试 `IMAGE_QUALITY_RETRY`（默认 1）次，结果写入 `media_metadata.quality` 与 `content.illustration.quality`；`status=low` 的资产不再缓存复用。课堂右侧面板新增质量分/低分提示与图片 Provider 选择（Qwen 默认、Pollinations 免费兜底、HuggingFace/Cloudflare 需服务端 Token）。另可选 VLM 语义复核（`IMAGE_QUALITY_VLM_ENABLED`，默认关闭）：复用用户自己的 Qwen 配置只评最终候选图，任何失败静默跳过，低于阈值仍标记 `low`。
-- 运维可观（已完成）：`app/core/metrics.py` 在进程内按 Provider 与任务类型计数；每次模型调用输出 `llm_call_completed`（provider/model/outcome/duration_ms），每次生成任务结束输出 `generation_job_finished`（job_id/kind/outcome/duration_ms），并按 `METRICS_SNAPSHOT_SECONDS`（默认 300，0 关闭）输出 `metrics_snapshot` 聚合行（calls/failures/failure_rate/avg_ms/max_ms）。
-- 任务队列（已完成）：生成任务改由 `generation_jobs` 表驱动的进程内 worker 池执行（`app/services/generation_queue.py`），worker 以 `SELECT ... FOR UPDATE SKIP LOCKED` 认领任务，不需要 Redis 且多副本不会重复执行；进程重启后遗留 `running` 任务自动回队列，`payload.attempts` 累加，超过 `GENERATION_JOB_MAX_ATTEMPTS`（默认 2）才置 `GENERATION_INTERRUPTED`；每 60 秒扫描一次 `stale` 任务兜底副本崩溃；`GENERATION_QUEUE_ENABLED=false` 时退回 `BackgroundTasks`。新增 8 个测试。
-- 生成加速与失败重试（已完成）：配图任务改为按 `IMAGE_CONCURRENCY`（默认 2，范围 1–6）并行执行，每个场景独立 session，VLM 熔断状态在并行任务间共享；导出装配并行读盘，警告按场景顺序合并，输出稳定。新增 `POST /api/v1/generation/jobs/{job_id}/retry`：复制原 job 的 payload（清空 `attempts`）重新入队，仅 `failed` 可重试，其他状态返回 `409 GENERATION_JOB_NOT_RETRYABLE`，带同一个活跃任务时返回 `409 GENERATION_IN_PROGRESS`；前端失败提示带「重试」按钮，重试后继续轮询新任务并刷新数据。新增后端 4 个、前端 2 个测试。
-- 细节修正（已完成）：`hash_verification_code` 的参数 `email` 改名为 `identifier`（手机号也走同一路径）；`chat.py` 日配额统计改用 `utcnow()`；教师提示词幕次由 `Stage N: name` 改为「第 N 幕：name」，与前端展示对齐。
-- 配图供应商加固（已完成）：pollinations 下载跟随最多 2 次重定向，瞬时 404/超时按 2s、4s 指数退避重试，免费层按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默认 45）进程内串行；失败信息附带配置 Token 或切换 Qwen 的可操作提示。
-- 教师对话流式输出（已完成）：新增 `POST /api/v1/courses/{course_id}/chat/messages/stream`，SSE 事件为 `delta`/`done`/`error`，等待首 token 时每 15 秒发送心跳；复用现有模型选择、同厂商空响应重试一次与本地不可用单次回退，流结束后仍一次性持久化问答，旧 `/chat/messages` 保留。前端教师面板逐字渲染 Markdown，失败时恢复草稿。
-- 测试套件提速（已完成）：接入 `pytest-xdist` 并在 `pyproject.toml` 默认 `-n 4`，每个 worker 自动创建并复用 `teachai_agent_test_gwN` 测试库；全量回归由 656s 降到 `-n 4` 127–135s、`-n 6` 90s、`-n 8` 72s，243 passed 不变，串行调试用 `-n 0`。原定的事务回滚方案在本环境不可行：该库单条 `TRUNCATE` 就需 ~0.7s（`synchronous_commit=off` 无效），且 pytest-asyncio 受 Python 3.8 限制停在 0.24，无法让多个用例复用同一条连接。
-
-待办：
-
-- 公网接入：`cpolar` 免费额度带宽与稳定性有限，上传大文件等长任务易超时与断流，更换 frp TCP 透传或者内网 443 端口映射。
-- 前端超大组件拆分（待排期）：`classroom-player.tsx`（约 1060 行）、`provider-settings.tsx`（约 740 行）、`knowledge-workspace.tsx`（约 660 行）、`login-form.tsx`（约 615 行），拆为 hook + 子组件。
+- 暂无。P0/P1/P2 已全部完成，后续新开发需求直接再追加在本文件。
