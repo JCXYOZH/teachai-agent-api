@@ -232,6 +232,7 @@ sudo /usr/local/nginx/sbin/nginx -s reload     # 首次启动用：sudo /usr/loc
 - 若 80 端口要留给 ACME 校验，`/.well-known/acme-challenge/` 走 `/usr/local/nginx/html/certbot`，用 Certbot `--webroot -w /usr/local/nginx/html/certbot` 签发。
 - 443 server 块带 `proxy_protocol`（对应 frp 的 PROXY protocol v2）；换成直连或其他入口时必须同步去掉，否则 TLS 握手失败返回 400。
 - 教师对话 SSE 走专用 `location`：`proxy_buffering off`、`proxy_cache off`、`gzip off`，其余 `/api/` 保持默认缓冲。
+- 素材上传走 `location = /api/v1/assets`：`proxy_request_buffering off` 让 Nginx 边收边转给 API，`client_body_timeout` 提到 300s；`client_max_body_size`（64m）必须大于 `ASSET_MAX_BYTES`（50 MB），否则 Nginx 会先用自己的 413。
 ## 环境避坑：容器网络 DNS
 
 服务器 Docker 默认 bridge 网络无法解析外部域名（`Temporary failure in name resolution`），但宿主网络正常。表现是镜像构建在 `pip install` / `npm ci` 阶段失败。
@@ -339,6 +340,7 @@ Pollinations 免费层默认按 `IMAGE_POLLINATIONS_MIN_INTERVAL_SECONDS`（默�
 9. `access.log` 中 `$remote_addr` 是真实公网 IP（证明 PROXY protocol 生效），此时短信按 IP 限流才会按真实来源计数。
 10. 教师对话逐字输出、不在中途整段出现，说明 SSE 未被缓冲。
 11. 隧道空闲 30 分钟后仍能打开首页与 `/api/v1/health`。
+12. 上传 55 MB 文件：浏览器端直接提示超过上限且不发请求；用 `curl` 直连 API 时在读完请求体前就返回 `413 FILE_TOO_LARGE`。
 
 ## 升级与回滚
 

@@ -18,7 +18,7 @@
 {
   "api_key": "sk-...",
   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "default_model": "qwen-plus",
+  "default_model": "qwen-max",
   "is_default": true,
   "tts_base_url": null,
   "tts_model": "qwen3-tts-flash",

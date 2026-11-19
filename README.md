@@ -121,6 +121,8 @@ Copy-Item .env.example .env
 
 上传资产使用本地磁盘，默认根目录为 `E:\Backups\Data\TeachAIAgent`，可通过 `ASSET_STORAGE_ROOT` 覆盖；生产为 `/data/TeachAIAgent`。PostgreSQL 保存资产元数据、所有权与解析文本，原始文件字节不进数据库。目录不会通过 `/static` 暴露，下载必须经过鉴权 API。
 
+超过 `ASSET_MAX_BYTES` 的上传由 `UploadSizeGuardMiddleware` 按 `Content-Length` 在读请求体之前拒绝（`413 FILE_TOO_LARGE`），不会先把整份文件写进临时目录。
+
 目录布局、软删除清理、备份要求与安全约束见 `docs/asset-storage.md`。
 
 ## Provider 与大纲

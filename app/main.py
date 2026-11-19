@@ -26,7 +26,11 @@ from app.core.config import settings
 from app.core.docs import swagger_ui_html
 from app.core.errors import install_error_handlers
 from app.core.logging import configure_logging
-from app.core.middleware import RequestContextMiddleware, ServerErrorShieldMiddleware
+from app.core.middleware import (
+    RequestContextMiddleware,
+    ServerErrorShieldMiddleware,
+    UploadSizeGuardMiddleware,
+)
 from app.db.session import engine
 from app.services.auth import purge_stale_verifications
 from app.services.generation_jobs import recover_interrupted_jobs
@@ -106,6 +110,7 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     app.add_middleware(ServerErrorShieldMiddleware)
+    app.add_middleware(UploadSizeGuardMiddleware, settings=settings)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,

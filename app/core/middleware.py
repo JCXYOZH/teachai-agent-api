@@ -86,3 +86,56 @@ class ServerErrorShieldMiddleware(BaseHTTPMiddleware):
                 status_code=500,
                 content=error_body("INTERNAL_ERROR", "An unexpected error occurred"),
             )
+
+# Starlette parses multipart bodies into a spooled temporary file before the
+# route runs, so an oversized upload is written to disk in full before the
+# storage layer can answer 413. Reject it from Content-Length instead.
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+
+
+class UploadSizeGuardMiddleware:
+    """Reject oversized uploads before the multipart parser reads the body."""
+
+    def __init__(self, app, settings: Settings) -> None:
+        self.app = app
+        self.settings = settings
+        self.guarded_path = f"{settings.api_v1_prefix}/assets"
+        self.max_request_bytes = settings.asset_max_bytes + MULTIPART_OVERHEAD_BYTES
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path", "").rstrip("/") != self.guarded_path:
+            await self.app(scope, receive, send)
+            return
+
+        content_length = None
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    content_length = int(value)
+                except ValueError:
+                    content_length = None
+                break
+        if content_length is None or content_length <= self.max_request_bytes:
+            await self.app(scope, receive, send)
+            return
+
+        state = scope.get("state") or {}
+        request_id = state.get("request_id", "unknown") if isinstance(state, dict) else "unknown"
+        logger.warning(
+            "upload_rejected_too_large request_id=%s content_length=%s limit_bytes=%s",
+            request_id,
+            content_length,
+            self.settings.asset_max_bytes,
+        )
+        limit_mb = self.settings.asset_max_bytes // (1024 * 1024)
+        response = JSONResponse(
+            status_code=413,
+            content=error_body(
+                "FILE_TOO_LARGE",
+                f"Uploaded file exceeds the {limit_mb} MB limit",
+            ),
+        )
+        await response(scope, receive, send)
