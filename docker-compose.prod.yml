@@ -1,13 +1,13 @@
-# Production stack for the TeachAI Agent API.
-# Host Nginx terminates TLS and proxies to 127.0.0.1:65534.
-# PostgreSQL runs on the host, so the container shares the host network and
-# reaches it through 127.0.0.1. uvicorn listens on 0.0.0.0:65534 so the API can also be called directly.
+# TeachAI Agent API 后端生产编排。
+# 宿主机 Nginx 终止 TLS，反向代理到 127.0.0.1:65534。
+# PostgreSQL 运行在宿主机，容器共用 host 网络并通过 127.0.0.1 访问；
+# uvicorn 监听 0.0.0.0:65534，API 也可被直接调用。
 services:
   api:
     build:
       context: .
       dockerfile: Dockerfile
-      # The server's default bridge DNS cannot resolve pypi.org, so builds use the host network.
+      # 服务器默认的 bridge 网络无法解析 pypi.org，因此构建时使用 host 网络。
       network: host
     image: teachai-agent-api:latest
     restart: unless-stopped

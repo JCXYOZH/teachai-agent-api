@@ -24,7 +24,7 @@ class SmsSender(Protocol):
 
 
 class LogSmsSender:
-    """Development sender: writes the code to the application log."""
+    """开发环境用的发送器：把验证码写入应用日志。"""
 
     async def send_verification_code(
         self, *, to: str, code: str, ttl_seconds: int
@@ -42,7 +42,7 @@ _memory_lock = threading.Lock()
 
 
 class MemorySmsSender:
-    """Test sender that keeps codes in process memory."""
+    """测试用发送器：验证码保存在进程内存中。"""
 
     async def send_verification_code(
         self, *, to: str, code: str, ttl_seconds: int
@@ -67,7 +67,7 @@ def clear_memory_outbox() -> None:
 
 
 class SpugSmsSender:
-    """Client for push.spug.cc template pushes."""
+    """push.spug.cc 模板推送的客户端封装。"""
 
     def __init__(
         self,

@@ -1,10 +1,9 @@
-"""Optional vision-model scoring for generated classroom illustrations.
+"""对生成的课堂配图做可选的视觉模型评分。
 
-The heuristic scorer in :mod:`app.services.image_quality` is cheap but blind to
-semantics: it cannot tell whether the artwork matches the lesson. When
-``IMAGE_QUALITY_VLM_ENABLED`` is on, a vision model from the owner's own
-provider configuration judges relevance and artifacts. Any failure here is
-logged and skipped so illustration generation never blocks on it.
+:mod:`app.services.image_quality` 中的启发式评分开销低，但无法判断语义：
+它看不出配图是否契合课程内容。开启 ``IMAGE_QUALITY_VLM_ENABLED`` 后，
+会使用用户自有 Provider 配置中的视觉模型判断相关性与瑕疵。该环节的
+任何异常都只记录日志并跳过，不影响配图任务的正常完成。
 """
 
 import base64

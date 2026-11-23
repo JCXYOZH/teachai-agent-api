@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     image_pollinations_base_url: str = "https://image.pollinations.ai/prompt"
     image_pollinations_model: str = "flux"
     image_pollinations_token: str = ""
-    # Free tier allows roughly one image every 45 seconds per IP.
+    # 免费额度下每个 IP 大约每 45 秒允许生成一张图片。
     image_pollinations_min_interval_seconds: float = 45.0
     image_fallback_chain: str = "pollinations"
     image_hf_endpoint: str = "https://api-inference.huggingface.co/models"
@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     image_quality_vlm_provider_id: str = "qwen"
     image_quality_vlm_model: str = "qwen3-vl-plus"
     image_quality_vlm_timeout_seconds: float = 45.0
-    # In-process generation worker pool backed by the generation_jobs table.
+    # 进程内生成任务工作池，以 generation_jobs 表作为任务来源。
     generation_queue_enabled: bool = True
     generation_worker_concurrency: int = 1
     generation_queue_poll_seconds: float = 1.0
@@ -113,14 +113,14 @@ class Settings(BaseSettings):
     glm_api_key: str = ""
     kimi_api_key: str = ""
 
-    # Registration email verification. Use "agentsend" outside development.
+    # 注册邮箱验证。非开发环境下使用 "agentsend" 通道。
     email_delivery: str = "log"
     agentsend_api_key: str = ""
     agentsend_inbox_name: str = "teachai-support"
     agentsend_inbox_id: str = ""
     agentsend_base_url: str = "https://api.agentsend.io"
     agentsend_timeout_seconds: float = 20.0
-    # Registration SMS verification. Use "spug" outside development.
+    # 注册短信验证。非开发环境下使用 "spug" 通道。
     sms_delivery: str = "log"
     spug_url: str = ""
     spug_timeout_seconds: float = 10.0

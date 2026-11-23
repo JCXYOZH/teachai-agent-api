@@ -62,11 +62,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         )
         return response
 class ServerErrorShieldMiddleware(BaseHTTPMiddleware):
-    """Return a JSON 500 from inside the CORS layer.
+    """在 CORS 层内部返回 JSON 格式的 500 响应。
 
-    Starlette's server-error middleware sits above the CORS middleware, so an
-    unhandled exception would otherwise reach the browser as a response without
-    ``Access-Control-Allow-Origin`` and be reported as a network failure.
+    Starlette 的服务端异常中间件位于 CORS 中间件之上，未捕获异常会以缺少
+    ``Access-Control-Allow-Origin`` 的响应到达浏览器，被前端误判为网络故障。
+    这里统一兜底，保证错误响应仍然携带 CORS 头。
     """
 
     async def dispatch(
@@ -87,14 +87,13 @@ class ServerErrorShieldMiddleware(BaseHTTPMiddleware):
                 content=error_body("INTERNAL_ERROR", "An unexpected error occurred"),
             )
 
-# Starlette parses multipart bodies into a spooled temporary file before the
-# route runs, so an oversized upload is written to disk in full before the
-# storage layer can answer 413. Reject it from Content-Length instead.
+# Starlette 会在进入路由之前把 multipart 请求体完整写入临时文件，超大文件
+# 先落盘之后存储层才可能返回 413。因此这里提前按 Content-Length 拒绝。
 MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 
 
 class UploadSizeGuardMiddleware:
-    """Reject oversized uploads before the multipart parser reads the body."""
+    """在 multipart 解析器读取请求体之前拒绝超大文件上传。"""
 
     def __init__(self, app, settings: Settings) -> None:
         self.app = app

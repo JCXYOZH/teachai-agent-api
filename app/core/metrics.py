@@ -1,7 +1,7 @@
-"""In-process counters for provider latency and generation job outcomes.
+"""统计模型调用耗时与生成任务结果的进程内计数器。
 
-Counters are process-local and reset on restart. They exist to feed the
-periodic ``metrics_snapshot`` log line, not to replace a metrics backend.
+计数器只在进程内有效，重启即清零。它的用途是周期性输出
+``metrics_snapshot`` 日志行，并不替代独立的指标系统。
 """
 
 import logging

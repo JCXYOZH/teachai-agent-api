@@ -79,7 +79,7 @@ class GeneratedImage:
 
 
 class _VlmBreaker:
-    """Shared across parallel scene tasks so one dead VLM stops all of them."""
+    """并行场景任务共用，某个视觉模型失联后其余任务一并跳过。"""
 
     def __init__(self) -> None:
         self.skips = 0
@@ -286,7 +286,7 @@ class IllustrationService:
         scene_id: UUID,
         payload: Dict[str, Any],
     ) -> Tuple[str, str, str]:
-        """Illustrate one scene in its own session so scenes can run in parallel."""
+        """在独立会话中为一个场景配图，使多个场景可以并行执行。"""
         async with semaphore:
             async with AsyncSessionLocal() as db:
                 service = IllustrationService(db, self.settings, vlm_breaker)
@@ -1260,7 +1260,7 @@ _next_pollinations_call_at = 0.0
 
 
 async def _wait_for_pollinations_slot(interval_seconds: float) -> None:
-    """Space out free-tier pollinations calls so they stop answering 402."""
+    """拉开免费额度下 pollinations 的调用间隔，避免持续返回 402。"""
     global _next_pollinations_call_at
     if interval_seconds <= 0:
         return
@@ -1291,7 +1291,7 @@ def _pollinations_seed(prompt: str, attempt: int = 0) -> int:
 def _pollinations_url(
     *, base_url: str, prompt: str, model: str, width: int, height: int, seed: int
 ) -> str:
-    # pollinations rejects seeds above the signed 32-bit range with HTTP 400.
+    # pollinations 对超出有符号 32 位范围的 seed 直接返回 HTTP 400。
     bounded = seed % POLLINATIONS_SEED_LIMIT
     encoded = quote(prompt, safe="")
     return (

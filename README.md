@@ -2,11 +2,13 @@
 
 TeachAIAgent 的后端服务：把一份课程素材变成可播放、可互动、可导出的 AI 课堂。
 
+**演示站点**：[ai.offer.us.ci](https://ai.offer.us.ci) · **前端仓库**：[teachai-agent-web](https://github.com/JCXYOZH/teachai-agent-web) · **后端仓库**：[teachai-agent-api](https://github.com/JCXYOZH/teachai-agent-api)
+
 ## 项目简介
 
 TeachAIAgent 是面向教师与自学者的 AI 备课与授课工作台。用户上传课件、教案或教材片段后，系统先把素材解析成可检索的中文文本，再基于用户自己的模型配置生成课程大纲、课堂讲稿与配图，最后在沉浸式课堂里播放、答疑并导出 PPTX 或单文件 HTML。
 
-本仓库是其中的后端，负责数据模型与鉴权、素材存储与解析、模型调用与重试、生成任务编排、课堂 DSL 合成、音视频与图片资产、导出渲染，以及生产部署模板。前端见 `teachai-agent-web`仓库，部署细节见 `docs/deployment.md`。
+本仓库是其中的后端，负责数据模型与鉴权、素材存储与解析、模型调用与重试、生成任务编排、课堂 DSL 合成、音视频与图片资产、导出渲染，以及生产部署模板。前端见 [teachai-agent-web](https://github.com/JCXYOZH/teachai-agent-web) 仓库，部署细节见 [docs/deployment.md](docs/deployment.md)。
 
 ## 核心功能
 
@@ -48,6 +50,28 @@ TeachAIAgent 是面向教师与自学者的 AI 备课与授课工作台。用户
 | langchain-openai | 0.1.3   |
 | Swagger UI | 5.17.14 |
 | PostgreSQL | 16.15   |
+
+## 项目结构
+
+```text
+teachai-agent-api/
+├── app/
+│   ├── api/                  # 路由层：auth、courses、assets、folders、search、providers、outlines、classroom、chat、media、health
+│   ├── core/                 # 配置、安全、加密、错误、日志、指标、中间件与输入清洗
+│   ├── db/                   # 引擎、会话与声明基类
+│   ├── models/               # SQLAlchemy 模型
+│   ├── schemas/              # Pydantic 请求与响应模型
+│   ├── services/             # 业务实现：LLM、大纲、课堂、对话、配图、旁白、导出、队列
+│   └── static/swagger-ui/    # 自托管 Swagger UI 资源
+├── alembic/                  # 数据库迁移
+├── deploy/nginx/             # Nginx 站点与主配置模板
+├── docs/                     # roadmap 与各模块设计文档
+├── scripts/                  # 迁移检查、依赖自检与资产清理脚本
+├── tests/                    # pytest 用例（一 worker 一库并行）
+├── docker-compose.yml        # 本地依赖（PostgreSQL）
+├── docker-compose.prod.yml   # 生产编排
+└── Dockerfile
+```
 
 ## 本地启动
 
@@ -123,12 +147,12 @@ Copy-Item .env.example .env
 
 超过 `ASSET_MAX_BYTES` 的上传由 `UploadSizeGuardMiddleware` 按 `Content-Length` 在读请求体之前拒绝（`413 FILE_TOO_LARGE`），不会先把整份文件写进临时目录。
 
-目录布局、软删除清理、备份要求与安全约束见 `docs/asset-storage.md`。
+目录布局、软删除清理、备份要求与安全约束见 [docs/asset-storage.md](docs/asset-storage.md)。
 
 ## Provider 与大纲
 
-- Provider 配置、API Key 加密、URL 防护和连接测试规则见 `docs/providers.md`。
-- 大纲版本、素材截断、JSON 宽容解析与重试策略见 `docs/outlines.md`。
+- Provider 配置、API Key 加密、URL 防护和连接测试规则见 [docs/providers.md](docs/providers.md)。
+- 大纲版本、素材截断、JSON 宽容解析与重试策略见 [docs/outlines.md](docs/outlines.md)。
 - 连接测试会真实请求 `/chat/completions` 或 Anthropic `/messages`；`/models` 仅用于补充模型列表。
 - Qwen 优先读取 `QWEN_API_KEY`，为空时回退到 `DASHSCOPE_API_KEY`。可用 `scripts/check_qwen.py` 验证 `qwen3.8-omni-flash`。
 - 旁白可用 `scripts/check_tts.py` 验证；阿里云 MaaS 工作区应传入 `--base-url https://<workspace-host>/api/v1`。
@@ -144,7 +168,7 @@ Copy-Item .env.example .env
 - 生成失败会把任务标记为 `failed` 并记录错误码，重试后仍失败返回 `CLASSROOM_INVALID_RESPONSE`。
 - 配图每页最多 1 张、整堂最多 6 张；整堂只补齐尚未配图的幻灯片；供应商返回的临时图片 URL 只用于即时下载，不写入数据库。
 - 配图按 `IMAGE_CONCURRENCY`（默认 2）并行，每张图经本地启发式质量评分，低分同 Provider 换变体提示词重试一次；`status=low` 的资产不再缓存复用。
-- 生成流程、场景格式与真实模型诊断见 `docs/classroom.md`。
+- 生成流程、场景格式与真实模型诊断见 [docs/classroom.md](docs/classroom.md)。
 
 ## 教师对话
 
@@ -154,7 +178,7 @@ Copy-Item .env.example .env
 - 输入上限 `CHAT_MAX_MESSAGE_CHARS=2000`，前端按 code point 计数并在超限时禁用发送，服务端同样校验。
 - 模型选择沿用全局语义：默认本地 `llama-local`，用户勾选「使用当前模型」后才用其配置，失败按既定规则同厂商重试与单次回退。
 - 流结束后一次性落库；每用户每天上限 `CHAT_DAILY_MESSAGE_LIMIT`。
-- 接口、提示词与错误码见 `docs/chat.md`。
+- 接口、提示词与错误码见 [docs/chat.md](docs/chat.md)。
 
 ## 课堂导出
 
@@ -162,7 +186,7 @@ Copy-Item .env.example .env
 - PPTX 按 1280×720 画布 1px = 9525 EMU 还原元素位置、字号与配色，配图转 JPEG 并叠渐变暗化，旁白（开启「含旁白」时）与答案进备注页，文末附「参考答案」页；slide 场景按 reveal 动作生成原生「单击出现」动画。
 - HTML 输出单文件：样式、脚本、配图与旁白全部内联，带场景导航、进度条、键盘切换与打印分页，元素 HTML 经白名单清洗；交互组件以 sandbox iframe 内联，可离线操作。
 - 上限由 `EXPORT_MAX_BYTES` 控制（默认 40 MB）；旁白音频按上限 60% 预算裁剪，超出部分丢弃音频并在 `warnings` 中提示。
-- 接口、错误码、文件命名与内容映射见 `docs/export.md`。
+- 接口、错误码、文件命名与内容映射见 [docs/export.md](docs/export.md)。
 
 ## 认证设计
 
@@ -177,7 +201,7 @@ Copy-Item .env.example .env
 - 每次刷新都会撤销旧 token 并轮换 refresh token 与 CSRF token；refresh / logout 需要 `X-CSRF-Token`。
 - 所有课程、素材、会话和设置查询都按当前用户隔离。
 
-注册流程、错误码与邮件短信配置见 `docs/auth.md`。
+注册流程、错误码与邮件短信配置见 [docs/auth.md](docs/auth.md)。
 
 ## 生成任务队列
 
@@ -228,18 +252,24 @@ cp .env.production.example .env.production
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-容器启动时先等待数据库，再执行 `alembic upgrade head`，最后启动 uvicorn；可用 `RUN_MIGRATIONS=0` 改为人工迁移。完整步骤、frp 与 Nginx 配置、验收清单、备份与回滚见 `docs/deployment.md`。
+容器启动时先等待数据库，再执行 `alembic upgrade head`，最后启动 uvicorn；可用 `RUN_MIGRATIONS=0` 改为人工迁移。完整步骤、frp 与 Nginx 配置、验收清单、备份与回滚见 [docs/deployment.md](docs/deployment.md)。
 
 ## 文档索引
 
 | 文档 | 内容 |
 | --- | --- |
-| `docs/roadmap.md` | 唯一待办清单与当前状态 |
-| `docs/auth.md` | 注册、登录、令牌、短信与错误码 |
-| `docs/asset-storage.md` | 素材落盘布局、备份与清理 |
-| `docs/providers.md` | Provider 配置、Key 加密与 URL 防护 |
-| `docs/outlines.md` | 大纲版本、截断与解析重试 |
-| `docs/classroom.md` | 课堂 DSL、生成流程与配图 |
-| `docs/chat.md` | 教师对话接口与提示词 |
-| `docs/export.md` | 导出格式、预算与下载 |
-| `docs/deployment.md` | 生产部署、frp 公网接入与运维 |
+| [docs/roadmap.md](docs/roadmap.md) | 唯一待办清单与当前状态 |
+| [docs/auth.md](docs/auth.md) | 注册、登录、令牌、短信与错误码 |
+| [docs/asset-storage.md](docs/asset-storage.md) | 素材落盘布局、备份与清理 |
+| [docs/providers.md](docs/providers.md) | Provider 配置、Key 加密与 URL 防护 |
+| [docs/outlines.md](docs/outlines.md) | 大纲版本、截断与解析重试 |
+| [docs/classroom.md](docs/classroom.md) | 课堂 DSL、生成流程与配图 |
+| [docs/chat.md](docs/chat.md) | 教师对话接口与提示词 |
+| [docs/export.md](docs/export.md) | 导出格式、预算与下载 |
+| [docs/deployment.md](docs/deployment.md) | 生产部署、frp 公网接入与运维 |
+
+## 许可证
+
+本项目采用 [GNU General Public License v3.0](LICENSE)（GPL-3.0）开源：可以自由使用、修改与再分发，衍生的作品必须以相同许可证公开完整源码，并保留版权声明与许可证副本。
+
+完整条款见仓库根目录的 [LICENSE](LICENSE)，或 <https://www.gnu.org/licenses/gpl-3.0.html>。

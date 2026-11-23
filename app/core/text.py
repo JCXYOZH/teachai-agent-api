@@ -7,10 +7,10 @@ _MULTI_NEWLINE = re.compile(r"\n{3,}")
 
 
 def sanitize_text(value: str) -> str:
-    """Remove characters a PostgreSQL text column cannot store.
+    """移除 PostgreSQL 文本列无法存储的字符。
 
-    NUL bytes break asyncpg with CharacterNotInRepertoireError, and a
-    lone surrogate cannot be encoded as UTF-8 at all.
+    NUL 字节会让 asyncpg 抛出 CharacterNotInRepertoireError，孤立代理项
+    则根本无法编码为 UTF-8。
     """
     if "\x00" in value:
         value = value.replace("\x00", "")
@@ -18,7 +18,7 @@ def sanitize_text(value: str) -> str:
 
 
 def sanitize_json(value: Any) -> Any:
-    """Recursively sanitize every string inside a JSON-like payload."""
+    """递归清洗类 JSON 载荷中的每一个字符串。"""
     if isinstance(value, str):
         return sanitize_text(value)
     if isinstance(value, dict):
@@ -37,13 +37,11 @@ def normalize_user_text(
     single_line: bool = False,
     preserve_layout: bool = False,
 ) -> str:
-    """Normalize user-supplied text before it reaches the database or a model.
+    """在用户文本写入数据库或送入模型之前做规范化处理。
 
-    NUL bytes and lone surrogates are removed, line endings are unified, and
-    control characters a text column or UI cannot display are dropped.
-    Single-line fields collapse all whitespace. Prose fields keep paragraph
-    breaks but trim noisy runs of spaces. Layout-preserving text keeps
-    indentation, which matters for pasted code in chat messages.
+    移除 NUL 字节与孤立代理项、统一换行符，并丢弃文本列或界面无法展示的
+    控制字符。单行字段压缩全部空白；正文保留段落但收敛连续空格；保留版式
+    的文本维持缩进，以便聊天消息中粘贴的代码保持原样。
     """
     text = sanitize_text(value)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -66,7 +64,7 @@ def normalize_user_text_input(
     single_line: bool = False,
     preserve_layout: bool = False,
 ) -> Any:
-    """Schema-friendly wrapper that lets Pydantic handle non-string values."""
+    """便于 Schema 使用的包装器，非字符串取值交给 Pydantic 自行处理。"""
     if not isinstance(value, str):
         return value
     return normalize_user_text(

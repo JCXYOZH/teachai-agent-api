@@ -11,7 +11,7 @@ from app.db.base import Base
 
 
 class PhoneVerification(Base):
-    """Pending phone registration awaiting SMS code proof."""
+    """待完成的手机号注册记录，等待短信验证码校验。"""
 
     __tablename__ = "phone_verifications"
     __table_args__ = (

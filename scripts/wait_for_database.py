@@ -1,4 +1,4 @@
-"""Wait until PostgreSQL accepts connections before starting the API container."""
+"""在启动 API 容器之前，等待 PostgreSQL 接受连接。"""
 
 import asyncio
 import os
@@ -26,7 +26,7 @@ async def wait_for_database(dsn: str, timeout: float, interval: float) -> bool:
         attempt += 1
         try:
             connection = await asyncpg.connect(dsn, timeout=5)
-        except Exception as exc:  # any failure means "not ready yet"
+        except Exception as exc:  # 任何异常都说明数据库尚未就绪
             last_error = f"{type(exc).__name__}: {exc}"
         else:
             await connection.close()

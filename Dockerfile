@@ -1,5 +1,5 @@
-# Production image for the TeachAI Agent API.
-# Keep the base tag aligned with the pinned runtime (Python 3.8.9 / py3.8-slim).
+# TeachAI Agent API 后端生产镜像。
+# 基础镜像标签与约定的运行时保持一致（Python 3.8.9 / py3.8-slim）。
 FROM python:3.8-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Fixed non-root identity: chown the mounted asset directory to 10001:10001 once.
+# 固定非 root 身份：挂载的素材目录需一次性 chown 到 10001:10001。
 RUN groupadd --gid 10001 app \
  && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin app
 
@@ -23,7 +23,7 @@ RUN chmod 0755 scripts/docker-entrypoint.sh \
 USER app
 EXPOSE 65534
 
-# Liveness only. Readiness (database + storage) is checked by ops and /health/ready.
+# 仅做存活探针；数据库与存储的就绪状态由运维探针和 /health/ready 检查。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request; raise SystemExit(0 if urllib.request.urlopen('http://127.0.0.1:65534/api/v1/health', timeout=3).getcode() == 200 else 1)"
 

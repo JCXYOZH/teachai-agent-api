@@ -11,7 +11,7 @@ from app.db.base import Base
 
 
 class VerificationSendLog(Base):
-    """Audit row for one verification code request, used for abuse throttling."""
+    """单次验证码请求的审计记录，用于频次限制与防滥用。"""
 
     __tablename__ = "verification_send_logs"
     __table_args__ = (

@@ -1,8 +1,7 @@
-"""Heuristic quality scoring for generated classroom illustrations.
+"""对生成的课堂配图做启发式质量评分。
 
-Scoring runs on the normalized WebP bytes that are actually stored, so the
-score always matches what the learner sees. It is deliberately cheap (Pillow
-only, no model calls) and every deduction has an explainable reason code.
+评分基于实际落库的 WebP 数据，因此得分与学员看到的画面一致。该实现刻意
+保持轻量（只用 Pillow，不调用模型），每一项扣分都有可解释的原因码。
 """
 
 import io

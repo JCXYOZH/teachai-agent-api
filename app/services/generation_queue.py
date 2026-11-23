@@ -22,12 +22,11 @@ RECOVERY_INTERVAL_SECONDS = 60.0
 
 
 class GenerationQueue:
-    """Database backed worker pool shared by every API process.
+    """由数据库支撑、所有 API 进程共用的工作池。
 
-    A worker claims the oldest queued job with ``SELECT ... FOR UPDATE SKIP
-    LOCKED``, marks it running in the same transaction and then executes it.
-    That keeps the queue correct without Redis and lets several API processes
-    poll the same table without ever claiming the same job twice.
+    工作进程通过 ``SELECT ... FOR UPDATE SKIP LOCKED`` 领取最早入队的任务，
+    在同一事务内标记为运行中再执行。这样无需 Redis 也能保证队列正确，
+    多个 API 进程轮询同一张表时不会重复领取同一个任务。
     """
 
     def __init__(self, concurrency: int, poll_seconds: float) -> None:
@@ -107,7 +106,7 @@ class GenerationQueue:
         return job
 
     async def recover_stale(self, grace_seconds: float) -> int:
-        """Requeue jobs whose worker stopped, fail them after max attempts."""
+        """把工作进程中断的任务重新入队，超过最大尝试次数后置为失败。"""
         cutoff = utcnow() - timedelta(seconds=grace_seconds)
         max_attempts = settings.generation_job_max_attempts
         requeued: List[GenerationJob] = []
@@ -226,7 +225,7 @@ def reset_generation_queue() -> None:
 async def schedule_generation_job(
     background_tasks: BackgroundTasks, job_id: UUID, kind: str
 ) -> None:
-    """Hand a queued job to the worker pool, or fall back to BackgroundTasks."""
+    """把排队任务交给工作池；未启用队列时回退到 BackgroundTasks。"""
     if settings.generation_queue_enabled:
         await get_generation_queue().enqueue(job_id)
         return

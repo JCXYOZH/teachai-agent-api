@@ -11,7 +11,7 @@ from app.db.base import Base
 
 
 class EmailVerification(Base):
-    """Pending registration awaiting email ownership proof."""
+    """待完成的注册记录，等待邮箱归属验证。"""
 
     __tablename__ = "email_verifications"
 

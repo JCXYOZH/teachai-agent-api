@@ -22,7 +22,7 @@ class EmailSender(Protocol):
 
 
 class LogEmailSender:
-    """Development sender: writes the code to the application log."""
+    """开发环境用的发送器：把验证码写入应用日志。"""
 
     async def send_verification_code(
         self, *, to: str, code: str, ttl_seconds: int
@@ -40,7 +40,7 @@ _memory_lock = threading.Lock()
 
 
 class MemoryEmailSender:
-    """Test sender that keeps codes in process memory."""
+    """测试用发送器：验证码保存在进程内存中。"""
 
     async def send_verification_code(
         self, *, to: str, code: str, ttl_seconds: int
@@ -65,7 +65,7 @@ def clear_memory_outbox() -> None:
 
 
 class AgentsendEmailSender:
-    """Client for the documented AgentSend REST API."""
+    """AgentSend 邮件接口的客户端封装。"""
 
     def __init__(
         self,
