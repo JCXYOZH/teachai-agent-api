@@ -44,7 +44,7 @@
 
 同一课程同类型的生成任务只允许一个。已有任务在排队或运行时，新的 POST 返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 指向进行中的任务，客户端应为继续轮询。服务重启时遗留的 `queued`/`running` 任务会在启动阶段标记为 `failed`，错误码为 `GENERATION_INTERRUPTED`。
 
-后台执行使用进程内任务，启动恢复也按单进程假设设计。若改为 `uvicorn --workers N`，需要换成共享队列（如 ARQ/Celery）并去掉启动时的全局恢复，否则其他 worker 正在执行的任务会被误判为中断。
+后台执行使用进程内任务。`claim_next()` 用 `FOR UPDATE SKIP LOCKED` 领取任务，领取本身对多进程是安全的；但启动恢复和周期性 `recover_stale` 仍按单进程假设设计。若改为 `uvicorn --workers N`，需要换成共享队列（如 ARQ/Celery）或给恢复逻辑加分布式锁，否则其他 worker 正在执行的任务可能被误判为中断。
 
 ## 场景格式
 

@@ -22,11 +22,12 @@ RECOVERY_INTERVAL_SECONDS = 60.0
 
 
 class GenerationQueue:
-    """由数据库支撑、所有 API 进程共用的工作池。
+    """由数据库支撑的进程内工作池。
 
     工作进程通过 ``SELECT ... FOR UPDATE SKIP LOCKED`` 领取最早入队的任务，
-    在同一事务内标记为运行中再执行。这样无需 Redis 也能保证队列正确，
-    多个 API 进程轮询同一张表时不会重复领取同一个任务。
+    在同一事务内标记为运行中再执行。领取本身对多进程是安全的，无需 Redis；
+    但 ``recover_stale`` 的启动恢复仍按单进程假设设计，部署不要使用
+    ``uvicorn --workers N``。
     """
 
     def __init__(self, concurrency: int, poll_seconds: float) -> None:
