@@ -42,9 +42,9 @@
 
 解析失败会自动重试一次；仍失败时返回 `CLASSROOM_INVALID_RESPONSE`，同时把任务标记为 `failed` 并记录 `error_code`。Provider 超时返回 `CLASSROOM_GENERATION_TIMEOUT`，其他 Provider 故障返回 `CLASSROOM_PROVIDER_ERROR`。
 
-同一课程同类型的生成任务只允许一个。已有任务在排队或运行时，新的 POST 返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 指向进行中的任务，客户端应为继续轮询。服务重启时遗留的 `queued`/`running` 任务会在启动阶段标记为 `failed`，错误码为 `GENERATION_INTERRUPTED`。
+同一课程同类型的生成任务只允许一个。已有任务在排队或运行时，新的 POST 返回 `409 GENERATION_IN_PROGRESS`，`details.job_id` 指向进行中的任务，客户端应继续轮询。队列启用时，服务重启后遗留的 `queued` 任务会继续由 worker 处理；遗留的 `running` 任务会按启动宽限回收并重新入队，累计尝试次数达到 `GENERATION_JOB_MAX_ATTEMPTS` 后才标记为 `failed`（`GENERATION_INTERRUPTED`）。
 
-后台执行使用进程内任务。`claim_next()` 用 `FOR UPDATE SKIP LOCKED` 领取任务，领取本身对多进程是安全的；但启动恢复和周期性 `recover_stale` 仍按单进程假设设计。若改为 `uvicorn --workers N`，需要换成共享队列（如 ARQ/Celery）或给恢复逻辑加分布式锁，否则其他 worker 正在执行的任务可能被误判为中断。
+后台执行使用进程内任务。`claim_next()` 用 `FOR UPDATE SKIP LOCKED` 领取任务，任务领取本身对多进程是安全的；但启动恢复和周期性 `recover_stale` 只依据 `status` 与 `updated_at` 判定超时，没有任务所有权或租约。仅给恢复扫描加分布式锁只能串行化扫描，无法阻止它回收另一个 worker 仍在执行的任务。因此不要在同一 API 实例中使用 `uvicorn --workers N`；多副本滚动重启仍需按 [部署文档](deployment.md#生成任务队列)设置启动宽限，需要可靠的多 worker 执行时应改用共享队列（如 ARQ/Celery）或独立 worker。
 
 ## 场景格式
 

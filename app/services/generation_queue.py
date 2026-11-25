@@ -25,9 +25,9 @@ class GenerationQueue:
     """由数据库支撑的进程内工作池。
 
     工作进程通过 ``SELECT ... FOR UPDATE SKIP LOCKED`` 领取最早入队的任务，
-    在同一事务内标记为运行中再执行。领取本身对多进程是安全的，无需 Redis；
-    但 ``recover_stale`` 的启动恢复仍按单进程假设设计，部署不要使用
-    ``uvicorn --workers N``。
+    在同一事务内标记为运行中再执行。任务领取在多进程下是安全的，无需 Redis；
+    但启动恢复与周期性 ``recover_stale`` 只依据 ``status`` 与 ``updated_at`` 判定超时，
+    没有任务所有权或租约，不要在同一 API 实例内使用 ``uvicorn --workers N``。
     """
 
     def __init__(self, concurrency: int, poll_seconds: float) -> None:
