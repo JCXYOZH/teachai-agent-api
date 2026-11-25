@@ -264,7 +264,7 @@ sudo iptables -t nat -L DOCKER -n | head
 重启 docker 会让运行中的容器按 `restart: unless-stopped` 重新拉起。
 ## 用已构建镜像启动
 
-镜像可以在开发机上通过远程 Docker（`DOCKER_HOST=tcp://10.121.124.121:2375`）构建，服务器只保留 compose 文件与 `.env.production`：
+镜像可以在开发机上通过远程 Docker（`DOCKER_HOST=tcp://10.130.16.121:2375`）构建，服务器只保留 compose 文件与 `.env.production`：
 
 ```bash
 cd /opt/teachai/teachai-agent-api
