@@ -57,6 +57,11 @@ def test_parse_score_clamps_and_limits_issues() -> None:
     assert len(long_issue.issues[0]) == 120
 
 
+def test_parse_score_ignores_non_finite_scores() -> None:
+    assert parse_score('{"score": 1e999, "issues": []}') is None
+    assert parse_score('{"score": "1e999", "issues": []}') is None
+
+
 async def test_vlm_scoring_disabled_returns_none(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "image_quality_vlm_enabled", False)
     result = await score_illustration(

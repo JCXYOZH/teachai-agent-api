@@ -110,10 +110,14 @@ def _duration(value: Any) -> Optional[int]:
     if isinstance(value, str):
         try:
             value = int(float(value.strip()))
-        except ValueError:
+        except (ValueError, OverflowError):
             return None
     if isinstance(value, float):
-        value = int(value)
+        try:
+            # json.loads 会把 1e999 / Infinity 解析成 inf，int(inf) 抛 OverflowError。
+            value = int(value)
+        except (OverflowError, ValueError):
+            return None
     if not isinstance(value, int):
         return None
     return max(1, min(value, 240))

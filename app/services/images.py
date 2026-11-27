@@ -756,7 +756,8 @@ class IllustrationService:
                 elif room > 0:
                     chosen.append(scene)
                     room -= 1
-            return chosen
+            # 上限被调低后，已插图页面可能已超过新上限；重做时同样只取前 limit 个。
+            return chosen[:limit]
         illustrated = await self._illustrated_scene_ids(owner_id, stage_id)
         remaining = limit - await self._illustration_count(owner_id, stage_id)
         if remaining <= 0:

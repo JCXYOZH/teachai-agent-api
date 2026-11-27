@@ -41,6 +41,14 @@ class ProbeResult:
     model: Optional[str] = None
 
 
+def _has_default_scheme(url: str, spec: ProviderSpec) -> bool:
+    """受信主机还必须保持运营方默认的协议（云厂商默认地址都是 HTTPS）。"""
+    expected = urlsplit(spec.default_base_url).scheme.lower()
+    if not expected:
+        return True
+    return urlsplit(url).scheme.lower() == expected
+
+
 @dataclass
 class ResolvedProvider:
     spec: ProviderSpec
@@ -632,7 +640,12 @@ class ProviderConfigService:
             return
         env_base = self._environment_value(resolved.spec.env_base_url_setting)
         for url in (resolved.base_url, resolved.tts_base_url):
-            if not url or is_trusted_provider_url(url, resolved.spec):
+            if not url:
+                continue
+            # 受信主机也不能把环境密钥降级到明文 HTTP（云厂商默认地址都是 HTTPS）。
+            if is_trusted_provider_url(url, resolved.spec) and _has_default_scheme(
+                url, resolved.spec
+            ):
                 continue
             if env_base and url.rstrip("/") == env_base.rstrip("/"):
                 continue

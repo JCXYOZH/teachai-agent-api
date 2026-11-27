@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     sms_ip_limit_per_minute: int = 3
     sms_ip_limit_per_hour: int = 10
     sms_target_limit_per_hour: int = 5
+    # 邮箱发码的 IP 额度比短信宽松：学校或公司 NAT 下常有多人同时注册；
+    # 同一收件地址的小时上限与短信一致，避免把验证码接口当成邮件轰炸工具。
+    email_ip_limit_per_minute: int = 10
+    email_ip_limit_per_hour: int = 60
+    email_target_limit_per_hour: int = 5
 
     @model_validator(mode="after")
     def validate_security_config(self) -> "Settings":
@@ -178,6 +183,12 @@ class Settings(BaseSettings):
             raise ValueError("SMS_IP_LIMIT_PER_HOUR must be between 1 and 500")
         if not 1 <= self.sms_target_limit_per_hour <= 100:
             raise ValueError("SMS_TARGET_LIMIT_PER_HOUR must be between 1 and 100")
+        if not 1 <= self.email_ip_limit_per_minute <= 60:
+            raise ValueError("EMAIL_IP_LIMIT_PER_MINUTE must be between 1 and 60")
+        if not 1 <= self.email_ip_limit_per_hour <= 500:
+            raise ValueError("EMAIL_IP_LIMIT_PER_HOUR must be between 1 and 500")
+        if not 1 <= self.email_target_limit_per_hour <= 100:
+            raise ValueError("EMAIL_TARGET_LIMIT_PER_HOUR must be between 1 and 100")
         if not 0 <= self.metrics_snapshot_seconds <= 86400:
             raise ValueError("METRICS_SNAPSHOT_SECONDS must be between 0 and 86400")
         if self.access_token_minutes < 1 or self.access_token_minutes > 1440:

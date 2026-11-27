@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Optional, Tuple, Union
 
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,9 +84,14 @@ class AuthService:
     ) -> PendingRegistration:
         if payload.phone is not None:
             return await self._send_phone_code(payload.phone, ip_address)
-        return await self._send_email_code(normalize_email(str(payload.email)))
+        return await self._send_email_code(
+            normalize_email(str(payload.email)), ip_address
+        )
 
-    async def _send_email_code(self, email: str) -> PendingRegistration:
+    async def _send_email_code(
+        self, email: str, ip_address: Optional[str]
+    ) -> PendingRegistration:
+        await self._enforce_send_limits("email", email, ip_address)
         await self._ensure_email_available(email)
         pending, code = await self._upsert_pending(email)
         await self._deliver_code(pending, code)
@@ -95,7 +100,7 @@ class AuthService:
     async def _send_phone_code(
         self, phone: str, ip_address: Optional[str]
     ) -> PendingRegistration:
-        await self._enforce_sms_send_limits(phone, ip_address)
+        await self._enforce_send_limits("phone", phone, ip_address)
         await self._ensure_phone_available(phone)
         pending, code = await self._upsert_phone_pending(phone)
         await self._deliver_sms_code(pending, code)
@@ -236,32 +241,43 @@ class AuthService:
             details={"attempts_remaining": remaining},
         )
 
-    async def _enforce_sms_send_limits(
-        self, phone: str, ip_address: Optional[str]
+    async def _enforce_send_limits(
+        self, channel: str, target: str, ip_address: Optional[str]
     ) -> None:
+        """邮箱与短信共用同一组滑动窗口限流，两个渠道分别计数。"""
+        if channel == "email":
+            target_limit = self.settings.email_target_limit_per_hour
+            ip_minute_limit = self.settings.email_ip_limit_per_minute
+            ip_hour_limit = self.settings.email_ip_limit_per_hour
+            error_code = "EMAIL_SEND_RATE_LIMITED"
+            message = "Too many verification email requests"
+        else:
+            target_limit = self.settings.sms_target_limit_per_hour
+            ip_minute_limit = self.settings.sms_ip_limit_per_minute
+            ip_hour_limit = self.settings.sms_ip_limit_per_hour
+            error_code = "SMS_SEND_RATE_LIMITED"
+            message = "Too many verification SMS requests"
+
         now = utcnow()
+        channel_filter = VerificationSendLog.channel == channel
         rules = [
             (
-                VerificationSendLog.target == phone,
+                and_(channel_filter, VerificationSendLog.target == target),
                 now - timedelta(hours=1),
-                self.settings.sms_target_limit_per_hour,
+                target_limit,
                 3600,
             )
         ]
         if ip_address:
+            ip_filter = and_(channel_filter, VerificationSendLog.ip_address == ip_address)
             rules.append(
-                (
-                    VerificationSendLog.ip_address == ip_address,
-                    now - timedelta(minutes=1),
-                    self.settings.sms_ip_limit_per_minute,
-                    60,
-                )
+                (ip_filter, now - timedelta(minutes=1), ip_minute_limit, 60)
             )
             rules.append(
                 (
-                    VerificationSendLog.ip_address == ip_address,
+                    ip_filter,
                     now - timedelta(hours=1),
-                    self.settings.sms_ip_limit_per_hour,
+                    ip_hour_limit,
                     3600,
                 )
             )
@@ -290,15 +306,15 @@ class AuthService:
                 )
                 raise AppError(
                     429,
-                    "SMS_SEND_RATE_LIMITED",
-                    "Too many verification SMS requests",
+                    error_code,
+                    message,
                     details={"retry_after": retry_after},
                 )
 
         self.db.add(
             VerificationSendLog(
-                channel="phone",
-                target=phone,
+                channel=channel,
+                target=target,
                 ip_address=(ip_address or "")[:64] or None,
                 created_at=now,
             )
@@ -443,6 +459,8 @@ class AuthService:
             seconds=self.settings.verification_code_ttl_seconds
         )
         pending.last_sent_at = now
+        # 重发后允许重新尝试；猜测窗口由重发冷却与 _enforce_send_limits 的
+        # 每地址每小时发送上限共同约束。
         pending.attempts = 0
 
     def _enforce_resend_cooldown(

@@ -418,6 +418,39 @@ async def test_environment_key_is_not_sent_to_user_chosen_base_url(
     assert sent == [("https://gateway.example.com/v1", "sk-user-own-1111")]
 
 
+async def test_environment_key_is_not_downgraded_to_plain_http(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, _ = await register_user(client, "provider-http-downgrade@example.com")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-operator-env-3333")
+    sent = []
+
+    async def fake_probe(
+        base_url: str, api_key: str, model: str, timeout: float
+    ) -> ProbeResult:
+        sent.append((base_url, api_key))
+        return ProbeResult(True, "ok", [])
+
+    monkeypatch.setattr(provider_service, "_probe_openai", fake_probe)
+
+    insecure = await client.post(
+        f"{PROVIDER_PATH}/openai/test",
+        headers=headers,
+        json={"base_url": "http://api.openai.com/v1"},
+    )
+    assert insecure.status_code == 422, insecure.text
+    assert insecure.json()["error"]["code"] == "PROVIDER_API_KEY_REQUIRED"
+    assert sent == []
+
+    secure = await client.post(
+        f"{PROVIDER_PATH}/openai/test",
+        headers=headers,
+        json={"base_url": "https://api.openai.com/v1"},
+    )
+    assert secure.status_code == 200, secure.text
+    assert sent == [("https://api.openai.com/v1", "sk-operator-env-3333")]
+
+
 async def test_openai_probe_always_runs_chat_completion(monkeypatch: Any) -> None:
     paths = []
 

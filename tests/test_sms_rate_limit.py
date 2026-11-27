@@ -69,6 +69,10 @@ async def test_email_channel_is_not_subject_to_sms_limits(
         response = await client.post(SEND_CODE_PATH, json={"email": email})
         assert response.status_code == 202, response.text
 
+    async with AsyncSessionLocal() as session:
+        rows = (await session.scalars(select(VerificationSendLog))).all()
+    assert {row.channel for row in rows} == {"email"}
+
 
 async def test_rate_limit_rows_expire_outside_the_window(client: AsyncClient) -> None:
     sent = await client.post(SEND_CODE_PATH, json={"phone": PHONES[0]})

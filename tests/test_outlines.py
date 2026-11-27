@@ -132,6 +132,18 @@ def test_generated_outline_accepts_bare_array_and_unknown_types() -> None:
     assert result.scenes[0]["order"] == 1
 
 
+def test_generated_outline_drops_non_finite_durations() -> None:
+    payload = json.loads(json.dumps(OUTLINE_RESPONSE))
+    payload["outlines"][0]["estimatedDuration"] = "1e999"
+    payload["outlines"][1]["estimatedDuration"] = float("inf")
+
+    result = normalize_generated_outline(json.dumps(payload), "课程")
+
+    assert len(result.scenes) == 2
+    for scene in result.scenes:
+        assert "estimated_duration" not in scene
+
+
 def test_generated_outline_keeps_array_widget_outline() -> None:
     raw = json.dumps(
         {

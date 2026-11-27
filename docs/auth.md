@@ -137,12 +137,12 @@ POST <SPUG_URL>
 
 ### 发送限流（防刷）
 
-手机号渠道在 60 秒重发冷却之外，还有三层滑动窗口限流，命中任意一层返回 `429 SMS_SEND_RATE_LIMITED`，`details.retry_after` 为建议等待秒数：
+手机号与邮箱渠道在 60 秒重发冷却之外，各自有独立的三层滑动窗口限流（两渠道分别计数），命中任意一层返回 429，`details.retry_after` 为建议等待秒数：短信为 `SMS_SEND_RATE_LIMITED`，邮箱为 `EMAIL_SEND_RATE_LIMITED`。
 
-- 同一 IP：每分钟最多 `SMS_IP_LIMIT_PER_MINUTE` 次、每小时最多 `SMS_IP_LIMIT_PER_HOUR` 次。
-- 同一手机号：每小时最多 `SMS_TARGET_LIMIT_PER_HOUR` 次。
+- 同一 IP：短信每分钟 `SMS_IP_LIMIT_PER_MINUTE`、每小时 `SMS_IP_LIMIT_PER_HOUR`；邮箱每分钟 `EMAIL_IP_LIMIT_PER_MINUTE`（默认 10）、每小时 `EMAIL_IP_LIMIT_PER_HOUR`（默认 60）。邮箱额度比短信宽松，因为学校或公司 NAT 下常有多人同时注册。
+- 同一收件地址：短信 `SMS_TARGET_LIMIT_PER_HOUR`，邮箱 `EMAIL_TARGET_LIMIT_PER_HOUR`（默认 5，与短信一致）。
 
-计数落在 `verification_send_logs`（`channel`、`target`、`ip_address`、`created_at`），每次进入发送流程前写一行；服务启动时清理 1 天前的记录。邮箱渠道不受这组限流约束，仍只受 60 秒冷却与尝试次数限制。IP 取自 `get_client_ip`，生产在反向代理后读取 `X-Forwarded-For` 末段（由 Nginx 追加，首段可被客户端伪造）。
+计数落在 `verification_send_logs`（`channel`、`target`、`ip_address`、`created_at`），每次进入发送流程前写一行；服务启动时清理 1 天前的记录。重发会把该条记录的错误尝试次数归零，猜测窗口由重发冷却与每地址每小时发送上限共同约束。IP 取自 `get_client_ip`，生产在反向代理后读取 `X-Forwarded-For` 末段（由 Nginx 追加，首段可被客户端伪造）。
 
 `APP_ENV=production` 时强制 `SMS_DELIVERY=spug`、`EMAIL_DELIVERY=agentsend`，且 `SPUG_URL`、`AGENTSEND_BASE_URL` 必须是 HTTPS，否则应用拒绝启动。
 
@@ -159,6 +159,7 @@ POST <SPUG_URL>
 | 400 | `INVALID_VERIFICATION_CODE` | 验证码错误，`details.attempts_remaining` 为剩余次数 |
 | 429 | `VERIFICATION_ATTEMPTS_EXCEEDED` | 错误次数用尽 |
 | 429 | `VERIFICATION_RESEND_TOO_SOON` | 重发过于频繁，`details.retry_after` 为秒数 |
+| 429 | `EMAIL_SEND_RATE_LIMITED` | 邮件发送超过 IP/收件地址限额，`details.retry_after` 为秒数 |
 | 429 | `SMS_SEND_RATE_LIMITED` | 短信发送超过 IP/号码限额，`details.retry_after` 为秒数 |
 | 503 | `EMAIL_DELIVERY_UNAVAILABLE` | 邮件服务未配置或发送失败 |
 | 503 | `SMS_DELIVERY_UNAVAILABLE` | 短信服务未配置或发送失败 |

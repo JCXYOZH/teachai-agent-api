@@ -569,6 +569,37 @@ async def test_regenerate_all_respects_the_per_classroom_image_limit(
     assert illustrated == [False, False] + [True] * 6
 
 
+async def test_regenerate_all_trims_scenes_when_limit_was_lowered(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-regen-lowered@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 8)
+    await configure_qwen(client, headers)
+    install_fake_images(monkeypatch, [])
+
+    for scene_id in scene_ids[2:]:
+        created = await client.post(
+            f"{API}/courses/{course_id}/classroom/scenes/{scene_id}/illustration",
+            headers=headers,
+            json={},
+        )
+        assert created.status_code == 202, created.text
+        assert (await job_state(client, headers, created.json()["id"]))["status"] == "completed"
+
+    monkeypatch.setattr(settings, "image_max_per_classroom", 4)
+    regenerated = await client.post(
+        f"{API}/courses/{course_id}/classroom/illustrations",
+        headers=headers,
+        json={"regenerate": True},
+    )
+    assert regenerated.status_code == 202, regenerated.text
+    finished = await job_state(client, headers, regenerated.json()["id"])
+
+    assert finished["status"] == "completed", finished
+    assert finished["scene_count"] == 4
+
+
 async def test_failed_quality_retry_keeps_the_first_image(
     client: AsyncClient, monkeypatch: Any
 ) -> None:

@@ -62,7 +62,8 @@ def parse_score(text: str, *, model: str = "unknown") -> Optional[VlmScore]:
             if isinstance(raw_score, (int, float, str)):
                 try:
                     score = int(float(raw_score))
-                except ValueError:
+                except (ValueError, OverflowError):
+                    # json.loads 会把 1e999 解析成 inf，int(inf) 抛 OverflowError。
                     score = None
             if score is not None:
                 raw_issues = payload.get("issues")
