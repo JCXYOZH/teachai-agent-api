@@ -1,4 +1,3 @@
-import hmac
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -8,6 +7,7 @@ from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.middleware import get_client_ip
+from app.core.security import tokens_equal
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.auth import (
@@ -84,7 +84,7 @@ def _require_csrf(request: Request) -> tuple:
     csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
     if not csrf_header or not csrf_cookie:
         raise AppError(403, "CSRF_INVALID", "CSRF validation failed")
-    if not hmac.compare_digest(csrf_header, csrf_cookie):
+    if not tokens_equal(csrf_header, csrf_cookie):
         raise AppError(403, "CSRF_INVALID", "CSRF validation failed")
     return csrf_header, csrf_cookie
 
