@@ -112,6 +112,11 @@ def hash_csrf_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def tokens_equal(left: str, right: str) -> bool:
+    """恒定时间比较两个客户端传入的字符串；``compare_digest`` 对非 ASCII 的 str 会抛 TypeError。"""
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 def secure_compare(raw_value: str, expected_hash: str) -> bool:
     if not raw_value or not expected_hash:
         return False

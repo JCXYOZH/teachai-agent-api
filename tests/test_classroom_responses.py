@@ -118,6 +118,28 @@ async def build_classroom(
     return {"course_id": course_id, "classroom": classroom.json()}
 
 
+async def test_submit_rejects_duplicate_targets(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await register_user(client, "responses-duplicate@example.com")
+    built = await build_classroom(client, headers, monkeypatch)
+    quiz_scene = built["classroom"]["scenes"][0]
+    question_id = quiz_scene["content"]["questions"][0]["id"]
+
+    response = await client.put(
+        f"{API}/courses/{built['course_id']}/classroom/scenes/{quiz_scene['id']}/responses",
+        headers=headers,
+        json={
+            "responses": [
+                {"kind": "question", "target_id": question_id, "answer": ["A"]},
+                {"kind": "question", "target_id": question_id, "answer": ["B"]},
+            ]
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+
 async def test_submit_grades_questions_and_project_tasks(
     client: AsyncClient, monkeypatch: Any
 ) -> None:

@@ -24,6 +24,7 @@ from app.core.security import (
     normalize_phone,
     normalize_phone_or_none,
     secure_compare,
+    tokens_equal,
     verify_password,
 )
 from app.core.time import utcnow
@@ -576,7 +577,7 @@ class AuthService:
                 "Refresh token is invalid or expired",
             )
 
-        if not hmac.compare_digest(csrf_header, csrf_cookie) or not secure_compare(
+        if not tokens_equal(csrf_header, csrf_cookie) or not secure_compare(
             csrf_header, auth_session.csrf_token_hash
         ):
             raise AppError(403, "CSRF_INVALID", "CSRF validation failed")
@@ -601,7 +602,7 @@ class AuthService:
         if auth_session is None or auth_session.revoked_at is not None:
             return
 
-        if not hmac.compare_digest(csrf_header, csrf_cookie) or not secure_compare(
+        if not tokens_equal(csrf_header, csrf_cookie) or not secure_compare(
             csrf_header, auth_session.csrf_token_hash
         ):
             raise AppError(403, "CSRF_INVALID", "CSRF validation failed")

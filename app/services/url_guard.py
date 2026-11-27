@@ -22,6 +22,10 @@ def _trusted_hosts(spec: ProviderSpec) -> Set[str]:
     }
 
 
+def is_trusted_provider_url(url: str, spec: ProviderSpec) -> bool:
+    return _hostname(url) in _trusted_hosts(spec)
+
+
 def _is_loopback_hostname(host: str) -> bool:
     return host == "localhost" or host.endswith(".localhost")
 

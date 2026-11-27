@@ -179,6 +179,7 @@ class IllustrationService:
         await generation_jobs.mark_running(
             self.db, job_id, progress=5, message="Preparing illustrations"
         )
+        course_id = job.course_id
         try:
             owner = await self.db.get(User, job.owner_id)
             if owner is None:
@@ -266,7 +267,7 @@ class IllustrationService:
             logger.exception(
                 "illustration_generation_failed job_id=%s course_id=%s",
                 job_id,
-                job.course_id,
+                course_id,
             )
             await generation_jobs.fail_job(
                 self.db,
@@ -493,13 +494,25 @@ class IllustrationService:
         best_report: Optional[QualityReport] = None
         for attempt in range(attempts):
             attempt_prompt = prompt if attempt == 0 else _retry_prompt(prompt, attempt)
-            generated = await self._generate_with(
-                provider_id,
-                owner=owner,
-                prompt=attempt_prompt,
-                qwen_model=qwen_model,
-                pollinations_model=pollinations_model,
-            )
+            try:
+                generated = await self._generate_with(
+                    provider_id,
+                    owner=owner,
+                    prompt=attempt_prompt,
+                    qwen_model=qwen_model,
+                    pollinations_model=pollinations_model,
+                )
+            except Exception:
+                if best_image is None:
+                    raise
+                # 重试失败不应丢弃上一次已生成的图片。
+                logger.warning(
+                    "image_quality_retry_failed provider=%s attempt=%s",
+                    provider_id,
+                    attempt + 1,
+                    exc_info=True,
+                )
+                break
             report = await run_in_threadpool(
                 assess_image,
                 generated.data,
@@ -733,7 +746,17 @@ class IllustrationService:
             )
         limit = self.settings.image_max_per_classroom
         if regenerate:
-            return slide_scenes[:limit]
+            # 已有插图的页面全部重做；新页面只在上限内补充。
+            illustrated = await self._illustrated_scene_ids(owner_id, stage_id)
+            room = limit - len(illustrated)
+            chosen: List[CourseScene] = []
+            for scene in slide_scenes:
+                if scene.id in illustrated:
+                    chosen.append(scene)
+                elif room > 0:
+                    chosen.append(scene)
+                    room -= 1
+            return chosen
         illustrated = await self._illustrated_scene_ids(owner_id, stage_id)
         remaining = limit - await self._illustration_count(owner_id, stage_id)
         if remaining <= 0:
@@ -1366,6 +1389,7 @@ async def _download_image(
     headers: Optional[Dict[str, str]] = None,
 ) -> bytes:
     target = url
+    origin = urlsplit(url)[:2]
     for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
         data, redirect = await _download_once(
             target, timeout=timeout, max_bytes=max_bytes, headers=headers
@@ -1374,6 +1398,9 @@ async def _download_image(
             return data
         logger.info("image_download_redirect target=%s", redirect)
         target = redirect
+        if headers and urlsplit(target)[:2] != origin:
+            # 与 httpx 默认行为一致：跨源重定向不携带凭据。
+            headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
     raise AppError(
         502,
         "IMAGE_DOWNLOAD_FAILED",

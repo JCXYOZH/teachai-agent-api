@@ -97,6 +97,24 @@ async def upload_text(
     return response.json()
 
 
+async def test_folder_name_that_casefolds_past_the_key_column_is_rejected(
+    client: AsyncClient,
+) -> None:
+    headers, _ = await register_user(client)
+    name = 'ß' * 61  # 61 characters, but casefold() turns each into "ss"
+    created = await client.post(
+        f'{settings.api_v1_prefix}/folders', headers=headers, json={'name': name}
+    )
+    assert created.status_code == 422, created.text
+    assert created.json()['error']['code'] == 'FOLDER_NAME_INVALID'
+
+    folder_id = await create_folder(client, headers, '数学讲义')
+    renamed = await client.patch(
+        f'{settings.api_v1_prefix}/folders/{folder_id}', headers=headers, json={'name': name}
+    )
+    assert renamed.status_code == 422, renamed.text
+
+
 async def test_folders_and_courses_are_owner_scoped(client: AsyncClient) -> None:
     headers, _ = await register_user(client)
     folder_id = await create_folder(client, headers, '数学讲义')

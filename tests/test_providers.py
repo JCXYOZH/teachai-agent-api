@@ -12,6 +12,7 @@ from app.db.session import AsyncSessionLocal
 from app.models.provider_config import ProviderConfig
 from app.models.user import User
 from app.services import providers as provider_service
+from app.services import url_guard
 from app.services.providers import ProbeResult, ProviderConfigService
 
 PROVIDER_PATH = f"{settings.api_v1_prefix}/providers"
@@ -377,6 +378,44 @@ async def test_qwen_uses_dashscope_environment_fallback(
     assert body["api_key_hint"] == "****9876"
     assert body["api_key_source"] == "environment"
     assert "qwen3.8-omni-flash" in body["default_models"]
+
+
+async def test_environment_key_is_not_sent_to_user_chosen_base_url(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, _ = await register_user(client)
+    monkeypatch.setattr(settings, "qwen_api_key", "sk-operator-env-0000")
+    monkeypatch.setattr(url_guard, "_resolve", lambda host, port: ["93.184.216.34"])
+    sent = []
+
+    async def fake_probe(
+        base_url: str, api_key: str, model: str, timeout: float
+    ) -> ProbeResult:
+        sent.append((base_url, api_key))
+        return ProbeResult(True, "ok", [])
+
+    monkeypatch.setattr(provider_service, "_probe_openai", fake_probe)
+    attacker = {"base_url": "https://gateway.example.com/v1"}
+
+    override = await client.post(
+        f"{PROVIDER_PATH}/qwen/test", headers=headers, json=attacker
+    )
+    assert override.status_code == 422, override.text
+    assert override.json()["error"]["code"] == "PROVIDER_API_KEY_REQUIRED"
+
+    saved = await client.put(f"{PROVIDER_PATH}/qwen/config", headers=headers, json=attacker)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["api_key_configured"] is False
+    stored = await client.post(f"{PROVIDER_PATH}/qwen/test", headers=headers)
+    assert stored.status_code == 422, stored.text
+
+    own_key = await client.post(
+        f"{PROVIDER_PATH}/qwen/test",
+        headers=headers,
+        json={**attacker, "api_key": "sk-user-own-1111"},
+    )
+    assert own_key.status_code == 200, own_key.text
+    assert sent == [("https://gateway.example.com/v1", "sk-user-own-1111")]
 
 
 async def test_openai_probe_always_runs_chat_completion(monkeypatch: Any) -> None:

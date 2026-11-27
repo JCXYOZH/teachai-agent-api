@@ -174,6 +174,16 @@ class ClassroomResponseSubmitRequest(BaseModel):
 
     responses: List[ClassroomAnswerItem] = Field(min_length=1, max_length=30)
 
+    @field_validator("responses")
+    @classmethod
+    def reject_duplicate_targets(
+        cls, value: List[ClassroomAnswerItem]
+    ) -> List[ClassroomAnswerItem]:
+        targets = [item.target_id for item in value]
+        if len(set(targets)) != len(targets):
+            raise ValueError("Each question or task can only be answered once per request")
+        return value
+
 
 class ClassroomResultView(BaseModel):
     target_id: str

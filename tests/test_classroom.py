@@ -413,6 +413,32 @@ async def test_invalid_model_output_marks_job_failed(client: AsyncClient, monkey
     assert job.error_code == "CLASSROOM_INVALID_RESPONSE"
 
 
+async def test_unexpected_error_still_records_classroom_failure(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await register_user(client, "crash-classroom@example.com")
+    course_id = await create_course(client, headers)
+    await save_outline(client, headers, course_id)
+
+    async def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+    # Fails after the owner/course/outline queries and before the next commit,
+    # so the rollback in the error handler expires the loaded job.
+    monkeypatch.setattr("app.services.classrooms.load_course_materials", boom)
+
+    response = await client.post(
+        f"{API}/courses/{course_id}/classroom/generate",
+        headers=headers,
+        json={},
+    )
+
+    assert response.status_code == 201, response.text
+    failed = await job_state(client, headers, response.json()["id"])
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "CLASSROOM_GENERATION_FAILED"
+
+
 async def test_duplicate_generation_is_rejected(client: AsyncClient) -> None:
     headers = await register_user(client, "duplicate-job@example.com")
     course_id = await create_course(client, headers)
