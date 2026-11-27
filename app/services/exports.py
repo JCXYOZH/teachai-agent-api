@@ -81,6 +81,7 @@ class ClassroomExportService:
         await generation_jobs.mark_running(
             self.db, job_id, progress=10, message="Preparing export"
         )
+        course_id = job.course_id
         try:
             owner = await self.db.get(User, job.owner_id)
             if owner is None:
@@ -181,7 +182,7 @@ class ClassroomExportService:
             logger.exception(
                 "export_generation_failed job_id=%s course_id=%s",
                 job_id,
-                job.course_id,
+                course_id,
             )
             await generation_jobs.fail_job(
                 self.db,
