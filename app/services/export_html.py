@@ -330,7 +330,7 @@ def _element_markup(element: Dict[str, Any], default_color: str) -> str:
         style += f"transform:rotate({rotate}deg);"
     font_name = element.get("defaultFontName")
     if isinstance(font_name, str) and font_name.strip():
-        style += f'font-family:"{html.escape(font_name.strip(), quote=True)}",sans-serif;'
+        style += f"font-family:'{html.escape(font_name.strip(), quote=True)}',sans-serif;"
     content = sanitize_fragment(str(element.get("content") or ""))
     return f'<div class="el" style="{style}">{content}</div>'
 
