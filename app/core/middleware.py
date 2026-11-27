@@ -118,8 +118,18 @@ class UploadSizeGuardMiddleware:
                 except ValueError:
                     content_length = None
                 break
-        if content_length is None or content_length <= self.max_request_bytes:
+        if content_length is not None and content_length <= self.max_request_bytes:
             await self.app(scope, receive, send)
+            return
+        if content_length is None:
+            # 分块上传没有总长度可校验，multipart 解析器会无上限写盘，直接拒绝。
+            response = JSONResponse(
+                status_code=411,
+                content=error_body(
+                    "LENGTH_REQUIRED", "Content-Length header is required for uploads"
+                ),
+            )
+            await response(scope, receive, send)
             return
 
         state = scope.get("state") or {}

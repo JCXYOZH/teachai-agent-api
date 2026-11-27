@@ -1,12 +1,12 @@
 import asyncio
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
 from app.core.middleware import UploadSizeGuardMiddleware
 
 
-def _run_guard(content_length: str) -> Tuple[List[str], List[Dict[str, Any]]]:
+def _run_guard(content_length: Optional[str]) -> Tuple[List[str], List[Dict[str, Any]]]:
     reached: List[str] = []
 
     async def app(scope, receive, send) -> None:
@@ -24,7 +24,7 @@ def _run_guard(content_length: str) -> Tuple[List[str], List[Dict[str, Any]]]:
         "type": "http",
         "method": "POST",
         "path": f"{settings.api_v1_prefix}/assets",
-        "headers": [(b"content-length", content_length.encode())],
+        "headers": [] if content_length is None else [(b"content-length", content_length.encode())],
         "state": {},
     }
     asyncio.run(UploadSizeGuardMiddleware(app, settings)(scope, receive, send))
@@ -43,6 +43,14 @@ def test_upload_guard_rejects_oversized_upload() -> None:
     )
     assert start["status"] == 413
     assert json.loads(body.decode("utf-8"))["error"]["code"] == "FILE_TOO_LARGE"
+
+
+def test_upload_guard_rejects_upload_without_content_length() -> None:
+    reached, messages = _run_guard(None)
+
+    assert reached == []
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    assert start["status"] == 411
 
 
 def test_upload_guard_allows_upload_within_limit() -> None:
