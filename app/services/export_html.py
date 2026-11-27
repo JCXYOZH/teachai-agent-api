@@ -85,7 +85,7 @@ INTERACTIVE_BASE_STYLES = (
     'body{font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;}'
     "*,*::before,*::after{box-sizing:border-box;}"
 )
-HEAD_PATTERN = re.compile(r"<head[^>]*>", re.IGNORECASE)
+HEAD_PATTERN = re.compile(r"<head(?=[\s/>])[^>]*>", re.IGNORECASE)
 HTML_PATTERN = re.compile(r"<html[^>]*>", re.IGNORECASE)
 
 STYLES = """

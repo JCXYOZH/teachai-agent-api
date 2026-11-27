@@ -926,6 +926,16 @@ def test_element_markup_keeps_font_family_inside_style_attribute() -> None:
     assert "font-family:'Microsoft YaHei',sans-serif;" in parser.attrs["style"]
 
 
+def test_interactive_document_injects_csp_into_head_not_header() -> None:
+    from app.services.export_html import interactive_document
+
+    document = interactive_document(
+        "<html><body><header>h</header><script>fetch('https://x')</script></body></html>"
+    )
+
+    assert document.index("Content-Security-Policy") < document.index("<body>")
+
+
 def test_render_html_embeds_interactive_widget_sandbox() -> None:
     from app.services.export_document import ExportDocument, ExportScene
     from app.services.export_html import render_html
