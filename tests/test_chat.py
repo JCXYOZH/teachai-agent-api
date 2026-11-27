@@ -153,6 +153,40 @@ async def test_chat_uses_current_scene_and_optional_materials(
     assert "MATERIAL-MARKER-9182" not in captured[1]
 
 
+async def test_chat_survives_losing_the_session_creation_race(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers = await login(client, "chat-race@example.com")
+    course_id = await build_classroom(client, headers, monkeypatch)
+
+    async def fake_provider(self: ChatService, resolved: Any, user_prompt: str) -> str:
+        return "ANSWER"
+
+    monkeypatch.setattr(ChatService, "_call_provider", fake_provider)
+    first = await client.post(
+        f"{API}/courses/{course_id}/chat/messages", headers=headers, json={"message": "one"}
+    )
+    assert first.status_code == 200, first.text
+
+    real_get_session = ChatService._get_session
+    lookups: List[int] = []
+
+    async def racing_get_session(self: ChatService, owner_id: Any, course: Any) -> Any:
+        lookups.append(1)
+        if len(lookups) == 1:
+            return None  # another request creates the row right after this check
+        return await real_get_session(self, owner_id, course)
+
+    monkeypatch.setattr(ChatService, "_get_session", racing_get_session)
+
+    second = await client.post(
+        f"{API}/courses/{course_id}/chat/messages", headers=headers, json={"message": "two"}
+    )
+
+    assert second.status_code == 200, second.text
+    assert second.json()["session_id"] == first.json()["session_id"]
+
+
 async def test_chat_clear_removes_history(client: AsyncClient, monkeypatch: Any) -> None:
     headers = await login(client, "chat-clear@example.com")
     course_id = await build_classroom(client, headers, monkeypatch)

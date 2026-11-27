@@ -896,6 +896,46 @@ def test_pptx_reveal_actions_animate_each_bullet() -> None:
     assert title_shape.shape_id not in targets
 
 
+def test_element_markup_keeps_font_family_inside_style_attribute() -> None:
+    from html.parser import HTMLParser
+
+    from app.services.export_html import _element_markup
+
+    markup = _element_markup(
+        {
+            "left": 0,
+            "top": 0,
+            "width": 100,
+            "height": 40,
+            "defaultFontName": "Microsoft YaHei",
+            "content": "<p>x</p>",
+        },
+        "000000",
+    )
+
+    class Attrs(HTMLParser):
+        attrs: Dict[str, Any] = {}
+
+        def handle_starttag(self, tag: str, attrs: Any) -> None:
+            if tag == "div" and not self.attrs:
+                self.attrs = dict(attrs)
+
+    parser = Attrs()
+    parser.feed(markup)
+    assert set(parser.attrs) == {"class", "style"}
+    assert "font-family:'Microsoft YaHei',sans-serif;" in parser.attrs["style"]
+
+
+def test_interactive_document_injects_csp_into_head_not_header() -> None:
+    from app.services.export_html import interactive_document
+
+    document = interactive_document(
+        "<html><body><header>h</header><script>fetch('https://x')</script></body></html>"
+    )
+
+    assert document.index("Content-Security-Policy") < document.index("<body>")
+
+
 def test_render_html_embeds_interactive_widget_sandbox() -> None:
     from app.services.export_document import ExportDocument, ExportScene
     from app.services.export_html import render_html

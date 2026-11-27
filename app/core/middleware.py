@@ -18,7 +18,8 @@ def get_client_ip(request: Request, settings: Settings) -> str:
     if settings.trust_proxy_headers:
         forwarded_for = request.headers.get("x-forwarded-for", "")
         if forwarded_for:
-            return forwarded_for.split(",", 1)[0].strip()
+            # 最右一段由我们自己的 Nginx 追加；最左一段是客户端可伪造的。
+            return forwarded_for.rsplit(",", 1)[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -117,8 +118,18 @@ class UploadSizeGuardMiddleware:
                 except ValueError:
                     content_length = None
                 break
-        if content_length is None or content_length <= self.max_request_bytes:
+        if content_length is not None and content_length <= self.max_request_bytes:
             await self.app(scope, receive, send)
+            return
+        if content_length is None:
+            # 分块上传没有总长度可校验，multipart 解析器会无上限写盘，直接拒绝。
+            response = JSONResponse(
+                status_code=411,
+                content=error_body(
+                    "LENGTH_REQUIRED", "Content-Length header is required for uploads"
+                ),
+            )
+            await response(scope, receive, send)
             return
 
         state = scope.get("state") or {}

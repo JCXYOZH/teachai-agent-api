@@ -535,6 +535,89 @@ async def test_fallback_chain_walks_providers_in_order(
     assert calls == ["qwen", "pollinations", "huggingface"]
 
 
+async def test_regenerate_all_respects_the_per_classroom_image_limit(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-regen-limit@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 8)
+    await configure_qwen(client, headers)
+    install_fake_images(monkeypatch, [])
+
+    for scene_id in scene_ids[2:]:
+        created = await client.post(
+            f"{API}/courses/{course_id}/classroom/scenes/{scene_id}/illustration",
+            headers=headers,
+            json={},
+        )
+        assert created.status_code == 202, created.text
+        assert (await job_state(client, headers, created.json()["id"]))["status"] == "completed"
+
+    regenerated = await client.post(
+        f"{API}/courses/{course_id}/classroom/illustrations",
+        headers=headers,
+        json={"regenerate": True},
+    )
+    assert regenerated.status_code == 202, regenerated.text
+    finished = await job_state(client, headers, regenerated.json()["id"])
+    assert finished["status"] == "completed", finished
+
+    classroom = await client.get(f"{API}/courses/{course_id}/classroom", headers=headers)
+    illustrated = [
+        "illustration" in scene["content"] for scene in classroom.json()["scenes"]
+    ]
+    assert illustrated == [False, False] + [True] * 6
+
+
+async def test_failed_quality_retry_keeps_the_first_image(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-retry-fail@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 1)
+    await configure_qwen(client, headers)
+    calls: List[int] = []
+
+    async def qwen_fails_on_retry(
+        resolved: ResolvedProvider, **kwargs: Any
+    ) -> GeneratedImage:
+        calls.append(len(calls) + 1)
+        if len(calls) > 1:
+            raise AppError(502, "IMAGE_PROVIDER_ERROR", "rate limited")
+        return GeneratedImage(
+            data=flat_webp_bytes(),
+            width=1024,
+            height=576,
+            provider_id="qwen",
+            model=str(kwargs["model"]),
+        )
+
+    async def fallback_must_not_run(**kwargs: Any) -> GeneratedImage:
+        raise AppError(502, "IMAGE_PROVIDER_ERROR", "fallback must not run")
+
+    monkeypatch.setattr("app.services.images.generate_qwen_image", qwen_fails_on_retry)
+    monkeypatch.setattr(
+        "app.services.images.generate_pollinations_image", fallback_must_not_run
+    )
+
+    created = await client.post(
+        f"{API}/courses/{course_id}/classroom/scenes/{scene_ids[0]}/illustration",
+        headers=headers,
+        json={},
+    )
+    assert created.status_code == 202, created.text
+    finished = await job_state(client, headers, created.json()["id"])
+    assert finished["status"] == "completed", finished
+    assert calls == [1, 2]
+
+    classroom = await client.get(
+        f"{API}/courses/{course_id}/classroom", headers=headers
+    )
+    illustration = classroom.json()["scenes"][0]["content"]["illustration"]
+    assert illustration["providerId"] == "qwen"
+    assert illustration["quality"]["status"] != "ok"
+
+
 async def test_low_quality_illustration_is_retried_once(
     client: AsyncClient, monkeypatch: Any
 ) -> None:
@@ -814,6 +897,41 @@ async def test_download_image_follows_redirect(monkeypatch: Any) -> None:
         "https://image.pollinations.ai/prompt/test",
         "https://cdn.example.com/art.png",
     ]
+
+
+async def test_download_image_drops_authorization_on_cross_origin_redirect(
+    monkeypatch: Any,
+) -> None:
+    payload = rich_webp_bytes()
+    seen: List[Any] = []
+    hops = iter(
+        [
+            (b"", "https://image.pollinations.ai/other"),
+            (b"", "https://cdn.example.com/art.png"),
+            (payload, None),
+        ]
+    )
+
+    async def fake_download_once(url: str, **kwargs: Any) -> Any:
+        seen.append(kwargs["headers"])
+        return next(hops)
+
+    async def allow_url(url: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.images._validate_download_url", allow_url)
+    monkeypatch.setattr("app.services.images._download_once", fake_download_once)
+
+    await _download_image(
+        "https://image.pollinations.ai/prompt/test",
+        timeout=1,
+        max_bytes=1024,
+        headers={"Authorization": "Bearer secret", "Accept": "image/*"},
+    )
+
+    assert seen[0] == {"Authorization": "Bearer secret", "Accept": "image/*"}
+    assert seen[1] == seen[0]
+    assert seen[2] == {"Accept": "image/*"}
 
 
 async def test_download_image_stops_after_too_many_redirects(

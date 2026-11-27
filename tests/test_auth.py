@@ -377,3 +377,21 @@ async def test_logout_revokes_session_and_clears_cookies(client: AsyncClient) ->
         )
 
     assert replay_response.status_code == 401
+
+
+async def test_refresh_with_non_ascii_csrf_values_is_a_403_not_a_500(
+    client: AsyncClient,
+) -> None:
+    response = await client.post(
+        REFRESH_PATH,
+        headers=[
+            (b'x-csrf-token', 'é'.encode()),
+            (
+                b'cookie',
+                f'{settings.csrf_cookie_name}=è; {settings.refresh_cookie_name}=x'.encode(),
+            ),
+        ],
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()['error']['code'] == 'CSRF_INVALID'

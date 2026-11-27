@@ -619,15 +619,16 @@ class ChatService:
         session = CourseChatSession(
             owner_id=owner.id, course_id=course.id, title=course.title
         )
-        self.db.add(session)
         try:
-            await self.db.commit()
+            # 用保存点：整库 rollback 会让 owner/course 等对象过期，后续再读属性会失败。
+            async with self.db.begin_nested():
+                self.db.add(session)
         except IntegrityError:
-            await self.db.rollback()
             existing = await self._get_session(owner.id, course.id)
             if existing is None:
                 raise
             return existing
+        await self.db.commit()
         await self.db.refresh(session)
         return session
 

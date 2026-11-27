@@ -614,6 +614,8 @@ class LibraryService:
         name_key: str,
         exclude_id: Optional[UUID] = None,
     ) -> None:
+        if len(name_key) > 120:  # casefold() 可能把名称展开得比 name_key 列更长
+            raise AppError(422, "FOLDER_NAME_INVALID", "Folder name is too long")
         statement = select(Folder.id).where(
             Folder.owner_id == owner_id, Folder.name_key == name_key
         )

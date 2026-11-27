@@ -28,7 +28,7 @@ from app.services.provider_registry import (
     ProviderSpec,
     get_provider_spec,
 )
-from app.services.url_guard import validate_provider_base_url
+from app.services.url_guard import is_trusted_provider_url, validate_provider_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +336,7 @@ class ProviderConfigService:
         resolved.base_url = await validate_provider_base_url(
             resolved.base_url, spec, self.settings
         )
+        self._guard_environment_key(resolved)
         self._ensure_api_key(resolved)
 
         started_at = time.perf_counter()
@@ -610,7 +611,7 @@ class ProviderConfigService:
                 (config.tts_voice if config is not None else None)
                 or spec.tts_default_voice
             )
-        return ResolvedProvider(
+        resolved = ResolvedProvider(
             spec=spec,
             config=config,
             api_key=api_key,
@@ -622,6 +623,22 @@ class ProviderConfigService:
             tts_voice=tts_voice,
             credential_unreadable=credential_unreadable,
         )
+        self._guard_environment_key(resolved)
+        return resolved
+
+    def _guard_environment_key(self, resolved: ResolvedProvider) -> None:
+        """运营方的环境密钥只发往受信任主机，不能跟着用户自填的 base_url 走。"""
+        if resolved.api_key_source != "environment":
+            return
+        env_base = self._environment_value(resolved.spec.env_base_url_setting)
+        for url in (resolved.base_url, resolved.tts_base_url):
+            if not url or is_trusted_provider_url(url, resolved.spec):
+                continue
+            if env_base and url.rstrip("/") == env_base.rstrip("/"):
+                continue
+            resolved.api_key = None
+            resolved.api_key_source = None
+            return
 
     def _environment_value(self, setting_name: Optional[str]) -> Optional[str]:
         if not setting_name:
