@@ -142,7 +142,7 @@ POST <SPUG_URL>
 - 同一 IP：每分钟最多 `SMS_IP_LIMIT_PER_MINUTE` 次、每小时最多 `SMS_IP_LIMIT_PER_HOUR` 次。
 - 同一手机号：每小时最多 `SMS_TARGET_LIMIT_PER_HOUR` 次。
 
-计数落在 `verification_send_logs`（`channel`、`target`、`ip_address`、`created_at`），每次进入发送流程前写一行；服务启动时清理 1 天前的记录。邮箱渠道不受这组限流约束，仍只受 60 秒冷却与尝试次数限制。IP 取自 `get_client_ip`，生产在反向代理后读取 `X-Forwarded-For` 首段。
+计数落在 `verification_send_logs`（`channel`、`target`、`ip_address`、`created_at`），每次进入发送流程前写一行；服务启动时清理 1 天前的记录。邮箱渠道不受这组限流约束，仍只受 60 秒冷却与尝试次数限制。IP 取自 `get_client_ip`，生产在反向代理后读取 `X-Forwarded-For` 末段（由 Nginx 追加，首段可被客户端伪造）。
 
 `APP_ENV=production` 时强制 `SMS_DELIVERY=spug`、`EMAIL_DELIVERY=agentsend`，且 `SPUG_URL`、`AGENTSEND_BASE_URL` 必须是 HTTPS，否则应用拒绝启动。
 

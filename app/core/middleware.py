@@ -18,7 +18,8 @@ def get_client_ip(request: Request, settings: Settings) -> str:
     if settings.trust_proxy_headers:
         forwarded_for = request.headers.get("x-forwarded-for", "")
         if forwarded_for:
-            return forwarded_for.split(",", 1)[0].strip()
+            # 最右一段由我们自己的 Nginx 追加；最左一段是客户端可伪造的。
+            return forwarded_for.rsplit(",", 1)[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
