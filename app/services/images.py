@@ -745,7 +745,17 @@ class IllustrationService:
             )
         limit = self.settings.image_max_per_classroom
         if regenerate:
-            return slide_scenes[:limit]
+            # 已有插图的页面全部重做；新页面只在上限内补充。
+            illustrated = await self._illustrated_scene_ids(owner_id, stage_id)
+            room = limit - len(illustrated)
+            chosen: List[CourseScene] = []
+            for scene in slide_scenes:
+                if scene.id in illustrated:
+                    chosen.append(scene)
+                elif room > 0:
+                    chosen.append(scene)
+                    room -= 1
+            return chosen
         illustrated = await self._illustrated_scene_ids(owner_id, stage_id)
         remaining = limit - await self._illustration_count(owner_id, stage_id)
         if remaining <= 0:

@@ -535,6 +535,40 @@ async def test_fallback_chain_walks_providers_in_order(
     assert calls == ["qwen", "pollinations", "huggingface"]
 
 
+async def test_regenerate_all_respects_the_per_classroom_image_limit(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-regen-limit@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 8)
+    await configure_qwen(client, headers)
+    install_fake_images(monkeypatch, [])
+
+    for scene_id in scene_ids[2:]:
+        created = await client.post(
+            f"{API}/courses/{course_id}/classroom/scenes/{scene_id}/illustration",
+            headers=headers,
+            json={},
+        )
+        assert created.status_code == 202, created.text
+        assert (await job_state(client, headers, created.json()["id"]))["status"] == "completed"
+
+    regenerated = await client.post(
+        f"{API}/courses/{course_id}/classroom/illustrations",
+        headers=headers,
+        json={"regenerate": True},
+    )
+    assert regenerated.status_code == 202, regenerated.text
+    finished = await job_state(client, headers, regenerated.json()["id"])
+    assert finished["status"] == "completed", finished
+
+    classroom = await client.get(f"{API}/courses/{course_id}/classroom", headers=headers)
+    illustrated = [
+        "illustration" in scene["content"] for scene in classroom.json()["scenes"]
+    ]
+    assert illustrated == [False, False] + [True] * 6
+
+
 async def test_failed_quality_retry_keeps_the_first_image(
     client: AsyncClient, monkeypatch: Any
 ) -> None:
