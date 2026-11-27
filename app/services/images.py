@@ -1366,6 +1366,7 @@ async def _download_image(
     headers: Optional[Dict[str, str]] = None,
 ) -> bytes:
     target = url
+    origin = urlsplit(url)[:2]
     for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
         data, redirect = await _download_once(
             target, timeout=timeout, max_bytes=max_bytes, headers=headers
@@ -1374,6 +1375,9 @@ async def _download_image(
             return data
         logger.info("image_download_redirect target=%s", redirect)
         target = redirect
+        if headers and urlsplit(target)[:2] != origin:
+            # 与 httpx 默认行为一致：跨源重定向不携带凭据。
+            headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
     raise AppError(
         502,
         "IMAGE_DOWNLOAD_FAILED",

@@ -816,6 +816,41 @@ async def test_download_image_follows_redirect(monkeypatch: Any) -> None:
     ]
 
 
+async def test_download_image_drops_authorization_on_cross_origin_redirect(
+    monkeypatch: Any,
+) -> None:
+    payload = rich_webp_bytes()
+    seen: List[Any] = []
+    hops = iter(
+        [
+            (b"", "https://image.pollinations.ai/other"),
+            (b"", "https://cdn.example.com/art.png"),
+            (payload, None),
+        ]
+    )
+
+    async def fake_download_once(url: str, **kwargs: Any) -> Any:
+        seen.append(kwargs["headers"])
+        return next(hops)
+
+    async def allow_url(url: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.images._validate_download_url", allow_url)
+    monkeypatch.setattr("app.services.images._download_once", fake_download_once)
+
+    await _download_image(
+        "https://image.pollinations.ai/prompt/test",
+        timeout=1,
+        max_bytes=1024,
+        headers={"Authorization": "Bearer secret", "Accept": "image/*"},
+    )
+
+    assert seen[0] == {"Authorization": "Bearer secret", "Accept": "image/*"}
+    assert seen[1] == seen[0]
+    assert seen[2] == {"Accept": "image/*"}
+
+
 async def test_download_image_stops_after_too_many_redirects(
     monkeypatch: Any,
 ) -> None:
