@@ -493,13 +493,25 @@ class IllustrationService:
         best_report: Optional[QualityReport] = None
         for attempt in range(attempts):
             attempt_prompt = prompt if attempt == 0 else _retry_prompt(prompt, attempt)
-            generated = await self._generate_with(
-                provider_id,
-                owner=owner,
-                prompt=attempt_prompt,
-                qwen_model=qwen_model,
-                pollinations_model=pollinations_model,
-            )
+            try:
+                generated = await self._generate_with(
+                    provider_id,
+                    owner=owner,
+                    prompt=attempt_prompt,
+                    qwen_model=qwen_model,
+                    pollinations_model=pollinations_model,
+                )
+            except Exception:
+                if best_image is None:
+                    raise
+                # 重试失败不应丢弃上一次已生成的图片。
+                logger.warning(
+                    "image_quality_retry_failed provider=%s attempt=%s",
+                    provider_id,
+                    attempt + 1,
+                    exc_info=True,
+                )
+                break
             report = await run_in_threadpool(
                 assess_image,
                 generated.data,

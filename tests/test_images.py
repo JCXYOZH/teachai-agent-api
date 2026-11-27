@@ -535,6 +535,55 @@ async def test_fallback_chain_walks_providers_in_order(
     assert calls == ["qwen", "pollinations", "huggingface"]
 
 
+async def test_failed_quality_retry_keeps_the_first_image(
+    client: AsyncClient, monkeypatch: Any
+) -> None:
+    headers, owner_id = await register_user(client, "image-retry-fail@example.com")
+    course_id = await create_course(client, headers)
+    _, scene_ids = await seed_classroom(owner_id, course_id, 1)
+    await configure_qwen(client, headers)
+    calls: List[int] = []
+
+    async def qwen_fails_on_retry(
+        resolved: ResolvedProvider, **kwargs: Any
+    ) -> GeneratedImage:
+        calls.append(len(calls) + 1)
+        if len(calls) > 1:
+            raise AppError(502, "IMAGE_PROVIDER_ERROR", "rate limited")
+        return GeneratedImage(
+            data=flat_webp_bytes(),
+            width=1024,
+            height=576,
+            provider_id="qwen",
+            model=str(kwargs["model"]),
+        )
+
+    async def fallback_must_not_run(**kwargs: Any) -> GeneratedImage:
+        raise AppError(502, "IMAGE_PROVIDER_ERROR", "fallback must not run")
+
+    monkeypatch.setattr("app.services.images.generate_qwen_image", qwen_fails_on_retry)
+    monkeypatch.setattr(
+        "app.services.images.generate_pollinations_image", fallback_must_not_run
+    )
+
+    created = await client.post(
+        f"{API}/courses/{course_id}/classroom/scenes/{scene_ids[0]}/illustration",
+        headers=headers,
+        json={},
+    )
+    assert created.status_code == 202, created.text
+    finished = await job_state(client, headers, created.json()["id"])
+    assert finished["status"] == "completed", finished
+    assert calls == [1, 2]
+
+    classroom = await client.get(
+        f"{API}/courses/{course_id}/classroom", headers=headers
+    )
+    illustration = classroom.json()["scenes"][0]["content"]["illustration"]
+    assert illustration["providerId"] == "qwen"
+    assert illustration["quality"]["status"] != "ok"
+
+
 async def test_low_quality_illustration_is_retried_once(
     client: AsyncClient, monkeypatch: Any
 ) -> None:
