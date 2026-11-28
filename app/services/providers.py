@@ -28,6 +28,7 @@ from app.services.provider_registry import (
     ProviderSpec,
     get_provider_spec,
 )
+from app.services.safe_http import pinned_client
 from app.services.url_guard import is_trusted_provider_url, validate_provider_base_url
 
 logger = logging.getLogger(__name__)
@@ -111,13 +112,13 @@ async def _probe_openai(
     timeout: float,
     *,
     text_only: bool = False,
+    spec: Optional[ProviderSpec] = None,
+    settings: Optional[Settings] = None,
 ) -> ProbeResult:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
+        async with pinned_client(
+            timeout, base_url=base_url, spec=spec, settings=settings
         ) as client:
             names: List[str] = []
             try:
@@ -181,6 +182,9 @@ async def _probe_anthropic(
     api_key: Optional[str],
     model: str,
     timeout: float,
+    *,
+    spec: Optional[ProviderSpec] = None,
+    settings: Optional[Settings] = None,
 ) -> ProbeResult:
     headers = {
         "anthropic-version": "2023-06-01",
@@ -189,10 +193,8 @@ async def _probe_anthropic(
     if api_key:
         headers["x-api-key"] = api_key
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
+        async with pinned_client(
+            timeout, base_url=base_url, spec=spec, settings=settings
         ) as client:
             response = await client.post(
                 f"{base_url}/messages",
@@ -354,6 +356,8 @@ class ProviderConfigService:
                 resolved.api_key,
                 resolved.default_model,
                 self.settings.provider_test_timeout_seconds,
+                spec=spec,
+                settings=self.settings,
             )
         else:
             probe_options: Dict[str, bool] = {}
@@ -364,6 +368,8 @@ class ProviderConfigService:
                 resolved.api_key,
                 resolved.default_model,
                 self.settings.provider_test_timeout_seconds,
+                spec=spec,
+                settings=self.settings,
                 **probe_options,
             )
         latency_ms = int((time.perf_counter() - started_at) * 1000)

@@ -37,6 +37,7 @@ from app.services.outline_schema import (
     normalize_manual_outline,
 )
 from app.services.providers import ProviderConfigService, ResolvedProvider
+from app.services.safe_http import pinned_client
 
 logger = logging.getLogger(__name__)
 
@@ -344,10 +345,11 @@ class OutlineService:
         user_prompt: str,
     ) -> str:
         timeout = self.settings.outline_generation_timeout_seconds
-        async_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
+        async_client = pinned_client(
+            timeout,
+            base_url=resolved.base_url,
+            spec=resolved.spec,
+            settings=self.settings,
         )
         try:
             model_kwargs: Dict[str, Any] = {}
@@ -409,12 +411,11 @@ class OutlineService:
         if resolved.api_key:
             headers["x-api-key"] = resolved.api_key
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(
-                    self.settings.outline_generation_timeout_seconds
-                ),
-                follow_redirects=False,
-                trust_env=False,
+            async with pinned_client(
+                self.settings.outline_generation_timeout_seconds,
+                base_url=resolved.base_url,
+                spec=resolved.spec,
+                settings=self.settings,
             ) as client:
                 response = await client.post(
                     f"{resolved.base_url}/messages",

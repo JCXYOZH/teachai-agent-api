@@ -10,8 +10,17 @@ from langchain_openai import ChatOpenAI
 from pydantic.v1 import SecretStr
 
 from app.core.metrics import record_llm_call
+from app.services.provider_registry import ProviderSpec, get_provider_spec
+from app.services.safe_http import pinned_client
 
 logger = logging.getLogger(__name__)
+
+
+def _pinned_client(
+    timeout: float, base_url: str, provider_id: Optional[str]
+) -> httpx.AsyncClient:
+    spec: Optional[ProviderSpec] = get_provider_spec(provider_id) if provider_id else None
+    return pinned_client(timeout, base_url=base_url, spec=spec)
 
 
 class LLMTimeoutError(RuntimeError):
@@ -69,11 +78,7 @@ async def call_openai_compatible(
         extra_body["chat_template_kwargs"] = {"enable_thinking": False}
     if extra_body:
         model_kwargs["extra_body"] = extra_body
-    async_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
-        follow_redirects=False,
-        trust_env=False,
-    )
+    async_client = _pinned_client(timeout, base_url, provider_id)
     started = time.perf_counter()
     outcome = "error"
     try:
@@ -147,11 +152,7 @@ async def call_anthropic(
     outcome = "error"
     try:
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout),
-                follow_redirects=False,
-                trust_env=False,
-            ) as client:
+            async with _pinned_client(timeout, base_url, provider_id) as client:
                 response = await client.post(
                     f"{base_url}/messages",
                     headers=headers,
@@ -222,11 +223,7 @@ async def stream_openai_compatible(
         extra_body["chat_template_kwargs"] = {"enable_thinking": False}
     if extra_body:
         model_kwargs["extra_body"] = extra_body
-    async_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
-        follow_redirects=False,
-        trust_env=False,
-    )
+    async_client = _pinned_client(timeout, base_url, provider_id)
     started = time.perf_counter()
     outcome = "cancelled"
     saw_text = False
@@ -301,11 +298,7 @@ async def stream_anthropic(
     outcome = "cancelled"
     saw_text = False
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
+        async with _pinned_client(timeout, base_url, provider_id) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/messages",

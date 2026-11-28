@@ -308,7 +308,7 @@ async def test_connection_test_uses_probe_and_returns_latency(
     headers, _ = await register_user(client)
 
     async def fake_probe(
-        base_url: str, api_key: str, model: str, timeout: float
+        base_url: str, api_key: str, model: str, timeout: float, **kwargs: Any
     ) -> ProbeResult:
         assert base_url == settings.llama_base_url
         assert model == settings.llama_model
@@ -349,7 +349,7 @@ async def test_anthropic_uses_native_probe(
     )
 
     async def fake_probe(
-        base_url: str, api_key: str, model: str, timeout: float
+        base_url: str, api_key: str, model: str, timeout: float, **kwargs: Any
     ) -> ProbeResult:
         assert base_url == "https://api.anthropic.com/v1"
         assert api_key == "sk-ant-test-1234"
@@ -389,7 +389,7 @@ async def test_environment_key_is_not_sent_to_user_chosen_base_url(
     sent = []
 
     async def fake_probe(
-        base_url: str, api_key: str, model: str, timeout: float
+        base_url: str, api_key: str, model: str, timeout: float, **kwargs: Any
     ) -> ProbeResult:
         sent.append((base_url, api_key))
         return ProbeResult(True, "ok", [])
@@ -426,7 +426,7 @@ async def test_environment_key_is_not_downgraded_to_plain_http(
     sent = []
 
     async def fake_probe(
-        base_url: str, api_key: str, model: str, timeout: float
+        base_url: str, api_key: str, model: str, timeout: float, **kwargs: Any
     ) -> ProbeResult:
         sent.append((base_url, api_key))
         return ProbeResult(True, "ok", [])

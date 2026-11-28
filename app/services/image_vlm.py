@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.models.user import User
 from app.services.providers import ProviderConfigService
+from app.services.safe_http import pinned_client
 
 logger = logging.getLogger(__name__)
 
@@ -168,10 +169,11 @@ async def score_illustration(
         "Authorization": "Bearer " + resolved.api_key,
     }
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.image_quality_vlm_timeout_seconds),
-            follow_redirects=False,
-            trust_env=False,
+        async with pinned_client(
+            settings.image_quality_vlm_timeout_seconds,
+            base_url=resolved.base_url,
+            spec=resolved.spec,
+            settings=settings,
         ) as client:
             response = await client.post(
                 resolved.base_url.rstrip("/") + "/chat/completions",

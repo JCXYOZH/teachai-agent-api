@@ -3,10 +3,8 @@ import base64
 import hashlib
 import html
 import io
-import ipaddress
 import logging
 import re
-import socket
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urljoin, urlsplit
@@ -35,6 +33,8 @@ from app.services.image_quality import (
 from app.services.image_vlm import score_illustration
 from app.services.media_storage import LocalMediaStorage
 from app.services.providers import ProviderConfigService, ResolvedProvider
+from app.services.safe_http import pinned_client
+from app.services.url_guard import UrlNotAllowed, resolve_public_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -906,10 +906,8 @@ async def generate_qwen_image(
         "parameters": {"prompt_extend": True},
     }
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
+        async with pinned_client(
+            timeout, base_url=resolved.base_url, spec=resolved.spec
         ) as client:
             response = await client.post(url, headers=headers, json=request)
     except httpx.TimeoutException as exc:
@@ -1461,11 +1459,7 @@ async def _download_once(
 ) -> Tuple[bytes, Optional[str]]:
     await _validate_download_url(url)
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
+        async with pinned_client(timeout, base_url=url) as client:
             async with client.stream("GET", url, headers=headers) as response:
                 if 300 <= response.status_code < 400:
                     location = response.headers.get("location")
@@ -1510,45 +1504,20 @@ async def _download_once(
     return bytes(buffer), None
 
 
+_DOWNLOAD_URL_MESSAGES = {
+    "invalid": "Generated image URL is invalid",
+    "unresolvable": "Generated image host is unavailable",
+    "address": "Generated image URL resolves to a private or reserved address",
+}
+
+
 async def _validate_download_url(url: str) -> None:
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.fragment
-    ):
-        raise AppError(
-            502, "IMAGE_DOWNLOAD_NOT_ALLOWED", "Generated image URL is invalid"
-        )
     try:
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except ValueError as exc:
+        await resolve_public_addresses(url)
+    except UrlNotAllowed as exc:
         raise AppError(
-            502, "IMAGE_DOWNLOAD_NOT_ALLOWED", "Generated image URL is invalid"
+            502, "IMAGE_DOWNLOAD_NOT_ALLOWED", _DOWNLOAD_URL_MESSAGES[exc.reason]
         ) from exc
-    try:
-        addresses = await run_in_threadpool(
-            socket.getaddrinfo, parsed.hostname, port, type=socket.SOCK_STREAM
-        )
-    except OSError as exc:
-        raise AppError(
-            502, "IMAGE_DOWNLOAD_NOT_ALLOWED", "Generated image host is unavailable"
-        ) from exc
-    for address in addresses:
-        try:
-            resolved = ipaddress.ip_address(address[4][0])
-        except ValueError as exc:
-            raise AppError(
-                502, "IMAGE_DOWNLOAD_NOT_ALLOWED", "Generated image URL is not allowed"
-            ) from exc
-        if not resolved.is_global:
-            raise AppError(
-                502,
-                "IMAGE_DOWNLOAD_NOT_ALLOWED",
-                "Generated image URL resolves to a private or reserved address",
-            )
 
 
 def _illustration_prompt(scene: CourseScene, payload: Dict[str, Any]) -> str:

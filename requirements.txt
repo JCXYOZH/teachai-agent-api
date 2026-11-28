@@ -24,6 +24,8 @@ bcrypt==4.0.1
 cryptography==42.0.8
 
 httpx==0.27.2
+# app.services.safe_http relies on AsyncConnectionPool(network_backend=...).
+httpcore==1.0.9
 aiohttp==3.10.11
 edge-tts==7.3.1
 tabulate==0.9.0
@@ -34,4 +36,3 @@ PyMuPDF==1.24.10
 Pillow==10.4.0
 python-docx==1.1.2
 python-pptx==0.6.23
-

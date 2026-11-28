@@ -11,7 +11,10 @@ import httpx
 from edge_tts.exceptions import EdgeTTSException
 
 from app.core.errors import AppError
+from app.services.provider_registry import ProviderSpec
 from app.services.providers import ResolvedProvider
+from app.services.safe_http import pinned_client
+from app.services.url_guard import UrlNotAllowed, resolve_public_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,7 @@ async def synthesize_speech(
             speed=speed,
             timeout=timeout,
             max_bytes=max_bytes,
+            spec=resolved.spec,
         )
     return await _synthesize_openai_compatible(
         base_url=base_url,
@@ -83,6 +87,7 @@ async def synthesize_speech(
         response_format="wav" if resolved.spec.id == "glm" else "mp3",
         timeout=timeout,
         max_bytes=max_bytes,
+        spec=resolved.spec,
     )
 
 
@@ -184,6 +189,7 @@ async def _synthesize_dashscope(
     speed: float,
     timeout: float,
     max_bytes: int,
+    spec: Optional[ProviderSpec] = None,
 ) -> SynthesizedAudio:
     url = _dashscope_generation_url(base_url)
     input_payload = {"text": text, "voice": voice}
@@ -196,7 +202,12 @@ async def _synthesize_dashscope(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = await _post_json(
-        url, headers=headers, payload=request, timeout=timeout, provider="qwen"
+        url,
+        headers=headers,
+        payload=request,
+        timeout=timeout,
+        provider="qwen",
+        spec=spec,
     )
     output = payload.get("output") if isinstance(payload, dict) else None
     audio = output.get("audio") if isinstance(output, dict) else None
@@ -242,6 +253,7 @@ async def _synthesize_openai_compatible(
     response_format: str,
     timeout: float,
     max_bytes: int,
+    spec: Optional[ProviderSpec] = None,
 ) -> SynthesizedAudio:
     request: dict = {
         "model": model,
@@ -256,10 +268,8 @@ async def _synthesize_openai_compatible(
         headers["Authorization"] = f"Bearer {api_key}"
     url = f"{base_url}/audio/speech"
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
+        async with pinned_client(
+            timeout, base_url=base_url, spec=spec
         ) as client:
             response = await client.post(url, headers=headers, json=request)
     except httpx.TimeoutException as exc:
@@ -310,13 +320,10 @@ async def _post_json(
     payload: dict,
     timeout: float,
     provider: str,
+    spec: Optional[ProviderSpec] = None,
 ) -> dict:
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
+        async with pinned_client(timeout, base_url=url, spec=spec) as client:
             response = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException as exc:
         raise AppError(
@@ -344,20 +351,28 @@ async def _post_json(
     return body
 
 
+_AUDIO_URL_MESSAGES = {
+    "invalid": "Generated audio URL is invalid",
+    "unresolvable": "Generated audio host is unavailable",
+    "address": "Generated audio URL resolves to a private or reserved address",
+}
+
+
+async def _validate_audio_url(url: str) -> None:
+    try:
+        await resolve_public_addresses(url)
+    except UrlNotAllowed as exc:
+        raise AppError(
+            502, "TTS_AUDIO_NOT_ALLOWED", _AUDIO_URL_MESSAGES[exc.reason]
+        ) from exc
+
+
 async def _download_audio(
     url: str, *, timeout: float, max_bytes: int
 ) -> Tuple[bytes, str]:
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise AppError(
-            502, "TTS_INVALID_RESPONSE", "Speech provider returned an invalid audio URL"
-        )
+    await _validate_audio_url(url)
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
+        async with pinned_client(timeout, base_url=url) as client:
             async with client.stream("GET", url) as response:
                 if response.status_code != 200:
                     raise AppError(
