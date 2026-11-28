@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from app.core.config import Settings
+from app.core.config import DEFAULT_IMAGE_MAX_PIXELS, Settings
 from app.core.errors import AppError
 from app.db.session import AsyncSessionLocal
 from app.models.classroom import CourseScene, CourseStage, GenerationJob
@@ -633,6 +633,7 @@ class IllustrationService:
                 model=qwen_model,
                 timeout=settings.image_generation_timeout_seconds,
                 max_bytes=settings.image_max_download_bytes,
+                max_pixels=settings.image_max_pixels,
                 max_width=settings.image_max_width,
                 max_height=settings.image_max_height,
                 webp_quality=settings.image_webp_quality,
@@ -646,6 +647,7 @@ class IllustrationService:
                 height=settings.image_target_height,
                 timeout=settings.image_generation_timeout_seconds,
                 max_bytes=settings.image_max_download_bytes,
+                max_pixels=settings.image_max_pixels,
                 max_width=settings.image_max_width,
                 max_height=settings.image_max_height,
                 webp_quality=settings.image_webp_quality,
@@ -666,6 +668,7 @@ class IllustrationService:
                 height=settings.image_target_height,
                 timeout=settings.image_generation_timeout_seconds,
                 max_bytes=settings.image_max_download_bytes,
+                max_pixels=settings.image_max_pixels,
                 max_width=settings.image_max_width,
                 max_height=settings.image_max_height,
                 webp_quality=settings.image_webp_quality,
@@ -678,6 +681,7 @@ class IllustrationService:
                 prompt=prompt,
                 timeout=settings.image_generation_timeout_seconds,
                 max_bytes=settings.image_max_download_bytes,
+                max_pixels=settings.image_max_pixels,
                 max_width=settings.image_max_width,
                 max_height=settings.image_max_height,
                 webp_quality=settings.image_webp_quality,
@@ -883,6 +887,7 @@ async def generate_qwen_image(
     max_width: int,
     max_height: int,
     webp_quality: int,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
 ) -> GeneratedImage:
     url = _qwen_image_generation_url(resolved.base_url)
     headers = {"Content-Type": "application/json"}
@@ -936,6 +941,7 @@ async def generate_qwen_image(
         max_width=max_width,
         max_height=max_height,
         quality=webp_quality,
+        max_pixels=max_pixels,
     )
     return GeneratedImage(
         data=normalized[0],
@@ -958,6 +964,7 @@ async def generate_pollinations_image(
     max_width: int,
     max_height: int,
     webp_quality: int,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
     token: str = "",
     min_interval_seconds: float = 0.0,
 ) -> GeneratedImage:
@@ -999,6 +1006,7 @@ async def generate_pollinations_image(
         max_width=max_width,
         max_height=max_height,
         quality=webp_quality,
+        max_pixels=max_pixels,
     )
     return GeneratedImage(
         data=normalized[0],
@@ -1030,6 +1038,7 @@ async def generate_huggingface_image(
     max_width: int,
     max_height: int,
     webp_quality: int,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
 ) -> GeneratedImage:
     if not token.strip():
         raise AppError(
@@ -1069,6 +1078,7 @@ async def generate_huggingface_image(
         max_width=max_width,
         max_height=max_height,
         webp_quality=webp_quality,
+        max_pixels=max_pixels,
     )
 
 
@@ -1109,6 +1119,7 @@ async def generate_cloudflare_image(
     max_width: int,
     max_height: int,
     webp_quality: int,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
 ) -> GeneratedImage:
     if not account_id.strip() or not token.strip():
         raise AppError(
@@ -1138,6 +1149,7 @@ async def generate_cloudflare_image(
         max_width=max_width,
         max_height=max_height,
         webp_quality=webp_quality,
+        max_pixels=max_pixels,
     )
 
 
@@ -1212,12 +1224,14 @@ async def _normalize_generated(
     max_width: int,
     max_height: int,
     webp_quality: int,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
 ) -> GeneratedImage:
     normalized = await normalize_image(
         data,
         max_width=max_width,
         max_height=max_height,
         quality=webp_quality,
+        max_pixels=max_pixels,
     )
     return GeneratedImage(
         data=normalized[0],
@@ -1227,23 +1241,52 @@ async def _normalize_generated(
         model=model,
     )
 async def normalize_image(
-    data: bytes, *, max_width: int, max_height: int, quality: int
+    data: bytes,
+    *,
+    max_width: int,
+    max_height: int,
+    quality: int,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
 ) -> Tuple[bytes, int, int]:
     return await run_in_threadpool(
-        _normalize_image_sync, data, max_width, max_height, quality
+        _normalize_image_sync, data, max_width, max_height, quality, max_pixels
+    )
+
+
+_IMAGE_DECODE_ERRORS = (
+    UnidentifiedImageError,
+    OSError,
+    ValueError,
+    Image.DecompressionBombError,
+)
+
+
+def _invalid_image_error() -> AppError:
+    return AppError(
+        502, "IMAGE_INVALID_RESPONSE", "Image provider returned invalid image data"
     )
 
 
 def _normalize_image_sync(
-    data: bytes, max_width: int, max_height: int, quality: int
+    data: bytes, max_width: int, max_height: int, quality: int, max_pixels: int
 ) -> Tuple[bytes, int, int]:
+    # Image.open() only parses the header, so the pixel limit below is enforced
+    # before the (potentially huge) raster is decoded into memory.
     try:
         opened = Image.open(io.BytesIO(data))
-        opened.load()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except _IMAGE_DECODE_ERRORS as exc:
+        raise _invalid_image_error() from exc
+    if opened.width * opened.height > max_pixels:
         raise AppError(
-            502, "IMAGE_INVALID_RESPONSE", "Image provider returned invalid image data"
-        ) from exc
+            502, "IMAGE_TOO_LARGE", "Generated image exceeds the pixel limit"
+        )
+    try:
+        if opened.format in {"JPEG", "MPO"}:
+            # Let libjpeg decode at a reduced scale instead of the full frame.
+            opened.draft("RGB", (max_width, max_height))
+        opened.load()
+    except _IMAGE_DECODE_ERRORS as exc:
+        raise _invalid_image_error() from exc
     image: Image.Image = ImageOps.exif_transpose(opened) or opened
     image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
     if image.mode not in {"RGB", "RGBA"}:

@@ -141,7 +141,7 @@ Qwen 请求失败、超时、没有可用 Key 或返回内容无法解码时，�
 
 示例：`IMAGE_FALLBACK_CHAIN=pollinations,cloudflare,huggingface`。链中没有可用通道时任务以 `IMAGE_PROVIDER_ERROR` 失败，错误信息列出每个通道的错误码。
 
-所有图片都会先下载到内存、限制大小、用 Pillow 解码校验、移除 EXIF、转为 WebP，再写入 `ASSET_STORAGE_ROOT`。临时供应商 URL 不会写入数据库，也不会直接暴露给浏览器。整堂配图只填充尚未配图的幻灯片，达到 `IMAGE_MAX_PER_CLASSROOM` 后返回 `422 IMAGE_LIMIT_REACHED`。
+所有图片都会先下载到内存、限制字节数（`IMAGE_MAX_DOWNLOAD_BYTES`）与像素数（`IMAGE_MAX_PIXELS`，只读文件头即拒绝超大图，不解码）、用 Pillow 解码校验、移除 EXIF、转为 WebP，再写入 `ASSET_STORAGE_ROOT`。临时供应商 URL 不会写入数据库，也不会直接暴露给浏览器。整堂配图只填充尚未配图的幻灯片，达到 `IMAGE_MAX_PER_CLASSROOM` 后返回 `422 IMAGE_LIMIT_REACHED`。
 
 相关配置：
 
@@ -150,6 +150,7 @@ IMAGE_PROVIDER_ID=qwen
 IMAGE_MODEL=qwen-image-3.0
 IMAGE_GENERATION_TIMEOUT_SECONDS=180
 IMAGE_MAX_DOWNLOAD_BYTES=26214400
+IMAGE_MAX_PIXELS=25000000
 IMAGE_MAX_WIDTH=1600
 IMAGE_MAX_HEIGHT=900
 IMAGE_WEBP_QUALITY=82

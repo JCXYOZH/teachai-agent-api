@@ -8,6 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_JWT_SECRET = "development-only-secret-change-before-production-5f2a9c"
 
 IMAGE_PROVIDER_IDS = {"qwen", "pollinations", "huggingface", "cloudflare"}
+# Largest source image (width * height) the image pipeline decodes. Generated
+# illustrations are ~1-4 MP, so 25 MP leaves headroom while keeping a crafted
+# image from allocating hundreds of megabytes per decode.
+DEFAULT_IMAGE_MAX_PIXELS = 25_000_000
 
 
 class Settings(BaseSettings):
@@ -71,6 +75,7 @@ class Settings(BaseSettings):
     image_model: str = "qwen-image-3.0"
     image_generation_timeout_seconds: float = 180.0
     image_max_download_bytes: int = 25 * 1024 * 1024
+    image_max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS
     image_max_width: int = 1600
     image_max_height: int = 900
     image_webp_quality: int = 82
@@ -289,6 +294,8 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.image_concurrency <= 6:
             raise ValueError("IMAGE_CONCURRENCY must be between 1 and 6")
+        if self.image_max_pixels < 1_000_000:
+            raise ValueError("IMAGE_MAX_PIXELS must be at least 1000000")
         if not 0 <= self.image_quality_min_score <= 100:
             raise ValueError("IMAGE_QUALITY_MIN_SCORE must be between 0 and 100")
         if not 0 <= self.image_quality_retry <= 3:
