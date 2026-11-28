@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
@@ -62,6 +63,31 @@ async def get_job_view(
     return job_view(job)
 
 
+async def _active_job_id(
+    db: AsyncSession, owner_id: UUID, course_id: UUID, kind: str
+) -> Optional[UUID]:
+    return await db.scalar(
+        select(GenerationJob.id)
+        .where(
+            GenerationJob.owner_id == owner_id,
+            GenerationJob.course_id == course_id,
+            GenerationJob.kind == kind,
+            GenerationJob.status.in_(ACTIVE_STATUSES),
+        )
+        .order_by(GenerationJob.created_at.desc())
+        .limit(1)
+    )
+
+
+def _in_progress_error(job_id: UUID) -> AppError:
+    return AppError(
+        409,
+        "GENERATION_IN_PROGRESS",
+        "Another generation is already running for this course",
+        details={"job_id": str(job_id)},
+    )
+
+
 async def create_job(
     db: AsyncSession,
     *,
@@ -75,24 +101,9 @@ async def create_job(
     payload: Optional[Dict[str, Any]] = None,
     message: str = "Queued",
 ) -> GenerationJob:
-    active_job_id = await db.scalar(
-        select(GenerationJob.id)
-        .where(
-            GenerationJob.owner_id == owner_id,
-            GenerationJob.course_id == course_id,
-            GenerationJob.kind == kind,
-            GenerationJob.status.in_(ACTIVE_STATUSES),
-        )
-        .order_by(GenerationJob.created_at.desc())
-        .limit(1)
-    )
+    active_job_id = await _active_job_id(db, owner_id, course_id, kind)
     if active_job_id is not None:
-        raise AppError(
-            409,
-            "GENERATION_IN_PROGRESS",
-            "Another generation is already running for this course",
-            details={"job_id": str(active_job_id)},
-        )
+        raise _in_progress_error(active_job_id)
 
     job = GenerationJob(
         owner_id=owner_id,
@@ -108,7 +119,17 @@ async def create_job(
         message=message,
     )
     db.add(job)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # A concurrent request inserted an active job for the same owner, course
+        # and kind between the SELECT above and this INSERT; the partial unique
+        # index uq_generation_jobs_active rejected ours. Report the winner.
+        await db.rollback()
+        active_job_id = await _active_job_id(db, owner_id, course_id, kind)
+        if active_job_id is None:
+            raise
+        raise _in_progress_error(active_job_id) from None
     await db.refresh(job)
     return job
 

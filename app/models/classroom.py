@@ -136,6 +136,14 @@ class GenerationJob(Base):
         CheckConstraint('scene_count >= 0', name='generation_job_scene_count'),
         Index('ix_generation_jobs_owner_created', 'owner_id', 'created_at'),
         Index('ix_generation_jobs_course_status', 'course_id', 'status'),
+        Index(
+            'uq_generation_jobs_active',
+            'owner_id',
+            'course_id',
+            'kind',
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

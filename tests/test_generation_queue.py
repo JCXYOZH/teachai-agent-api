@@ -19,6 +19,15 @@ from app.services.generation_queue import GenerationQueue, schedule_generation_j
 
 API = settings.api_v1_prefix
 
+# Only one active job may exist per (owner, course, kind), so a multi-job
+# fixture has to spread the jobs over different kinds.
+JOB_KINDS = (
+    generation_jobs.JOB_KIND_CLASSROOM,
+    generation_jobs.JOB_KIND_NARRATION,
+    generation_jobs.JOB_KIND_IMAGE,
+    generation_jobs.JOB_KIND_EXPORT,
+)
+
 
 async def seed_jobs(
     client: AsyncClient, count: int, email: str = "queue@example.com"
@@ -37,11 +46,11 @@ async def seed_jobs(
         owner_id = await session.scalar(
             select(Course.owner_id).where(Course.id == course_id)
         )
-        for _ in range(count):
+        for index in range(count):
             job = GenerationJob(
                 owner_id=owner_id,
                 course_id=course_id,
-                kind="classroom",
+                kind=JOB_KINDS[index % len(JOB_KINDS)],
                 status="queued",
                 message="Queued",
             )
