@@ -1,7 +1,7 @@
 # TeachAI Agent API 后端生产编排。
 # 宿主机 Nginx 终止 TLS，反向代理到 127.0.0.1:65534。
 # PostgreSQL 运行在宿主机，容器共用 host 网络并通过 127.0.0.1 访问；
-# uvicorn 监听 0.0.0.0:65534，API 也可被直接调用。
+# uvicorn 只监听 127.0.0.1:65534，仅本机 Nginx 可回源，其他机器无法直连。
 services:
   api:
     build:
@@ -22,7 +22,7 @@ services:
       - uvicorn
       - app.main:app
       - --host
-      - 0.0.0.0
+      - 127.0.0.1
       - --port
       - "65534"
       - --proxy-headers

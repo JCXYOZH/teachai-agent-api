@@ -1,6 +1,6 @@
 # 生产部署
 
-单机部署：一台 CentOS 7.9 服务器（以 `node2` 示例）同时运行 Nginx、PostgreSQL 16 和两个 Docker 容器。公网入口只有海外中转机上 `frps` 的 80/443，经 frp 隧道透传到本机 Nginx；容器端口 49153（前端）与 65534（后端）只听内网，便于内部调用与排障。
+单机部署：一台 CentOS 7.9 服务器（以 `node2` 示例）同时运行 Nginx、PostgreSQL 16 和两个 Docker 容器。公网入口只有海外中转机上 `frps` 的 80/443，经 frp 隧道透传到本机 Nginx；前端 49153 只听内网；后端 65534 只听 `127.0.0.1`，仅本机 Nginx 可回源。
 
 ## 环境准备
 
@@ -10,7 +10,7 @@
 | 证书 | Let's Encrypt，certbot 在 `node2` 签发，同步到 `/etc/nginx/certs/teachai`（`fullchain.pem`、`privkey.pem`） |
 | 生产数据库 | `teachai_agent`（PostgreSQL 16，宿主机）                                          |
 | 资产目录 | `/data/TeachAIAgent`，已执行 `chown -R 10001:10001`                             |
-| 后端端口 | 容器内 `0.0.0.0:65534`                                                         |
+| 后端端口 | `127.0.0.1:65534`（host 网络，仅本机 Nginx 可回源）                                    |
 | 前端端口 | `0.0.0.0:49153`（host 网络，不做端口映射）                                             |
 | 迁移 | 容器启动时自动执行 `alembic upgrade head`                                            |
 | llama.cpp | `http://47.120.68.25:65535/v1` ，模型 `Qwen3.6-35B-A3B`                        |
@@ -159,7 +159,7 @@ docker compose -f docker-compose.prod.yml logs -f api
 
 要点：
 
-- 容器使用 `network_mode: host`，因为 PostgreSQL 在宿主机上；uvicorn 监听 `0.0.0.0:65534`，Nginx 通过 `127.0.0.1:65534` 回源。
+- 容器使用 `network_mode: host`，因为 PostgreSQL 在宿主机上；uvicorn 只监听 `127.0.0.1:65534`（compose 的 `command` 覆盖了镜像默认的 `0.0.0.0`），Nginx 通过 `127.0.0.1:65534` 回源，其他机器无法直连。
 - 启动顺序：`scripts/docker-entrypoint.sh` 先等待数据库（`scripts/wait_for_database.py`），再执行 `alembic upgrade head`，最后启动 uvicorn。数据库不可达时按 `DB_WAIT_TIMEOUT_SECONDS` 重试后退出，由 `restart: unless-stopped` 继续重试。
 - 需要人工控制迁移时把 `RUN_MIGRATIONS` 设为 `0`，再单独执行：
 
@@ -233,6 +233,9 @@ sudo /usr/local/nginx/sbin/nginx -s reload     # 首次启动用：sudo /usr/loc
 - 443 server 块带 `proxy_protocol`（对应 frp 的 PROXY protocol v2）；换成直连或其他入口时必须同步去掉，否则 TLS 握手失败返回 400。
 - 教师对话 SSE 走专用 `location`：`proxy_buffering off`、`proxy_cache off`、`gzip off`，其余 `/api/` 保持默认缓冲。
 - 素材上传走 `location = /api/v1/assets`：`proxy_request_buffering off` 让 Nginx 边收边转给 API，`client_body_timeout` 提到 300s；`client_max_body_size`（64m）必须大于 `ASSET_MAX_BYTES`（50 MB），否则 Nginx 会先用自己的 413。
+
+- `proxy_set_header` 不跨层级继承：某个 `location` 只要自己定义了任意一条（例如 `location /` 的 Upgrade/Connection），就不会再继承 server 层的公共头，必须在该块内把 Host / X-Real-IP / X-Forwarded-* 全部重复一遍。以后在任何 `location` 里新增 `proxy_set_header` 都要遵守这一点。
+
 ## 环境避坑：容器网络 DNS
 
 服务器 Docker 默认 bridge 网络无法解析外部域名（`Temporary failure in name resolution`），但宿主网络正常。表现是镜像构建在 `pip install` / `npm ci` 阶段失败。
@@ -286,15 +289,21 @@ docker build --network host -t teachai-agent-web:latest \
 
 ## 端口暴露
 
-容器端口监听在宿主机 `0.0.0.0`，仅用于排障与内网调用；公网入口只有 `frps` 的 80/443。若不允许内网之外的机器直连，请在防火墙上限制来源：
+公网入口只有 `frps` 的 80/443。后端 uvicorn 只监听 `127.0.0.1:65534`，仅本机 Nginx 可回源，其他机器无法直连，防火墙不需要为 65534 开洞。前端 49153 仍监听 `0.0.0.0`，仅供内网排障与调用；若不允许内网之外的机器直连前端，请在防火墙上限制来源：
 
 ```bash
 sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="49153" protocol="tcp" accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="65534" protocol="tcp" accept'
 sudo firewall-cmd --reload
 ```
 
-注意：直连 65534 会绕过 TLS，refresh cookie 带 `Secure` 不会在 http 下生效，正常用户必须走 `https://ai.offer.us.ci`。
+早期版本曾为 65534 放行内网来源；后端改绑 `127.0.0.1` 后这条规则已无作用，可以按原文删除：
+
+```bash
+sudo firewall-cmd --permanent --remove-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="65534" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+
+注意：排障时在服务器本机执行 `curl http://127.0.0.1:65534/api/v1/health` 即可，不必从其他机器直连。本机直连会绕过 TLS，refresh cookie 带 `Secure` 不会在 http 下生效，正常用户必须走 `https://ai.offer.us.ci`。
 
 ## 生成任务队列
 
